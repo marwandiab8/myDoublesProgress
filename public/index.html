@@ -233,6 +233,7 @@
             <li>If you miss a double, it stays unfinished and will be attempted again next round.</li>
             <li>The app automatically cycles back to the <strong>earliest unfinished double</strong> until everything is closed.</li>
             <li>Timer excludes paused time.</li>
+            <li><strong>Undo last throw</strong> reverts your most recent hit or miss (including after a finished round removes the saved history row for that save).</li>
           </ul>
         </div>
 
@@ -281,6 +282,10 @@
           <button class="btn-ok disabled" id="btnHit2">✅ Hit on 2</button>
           <button class="btn-ok disabled" id="btnHit3">✅ Hit on 3</button>
           <button class="btn-err disabled" id="btnMiss">❌ Miss (0/3)</button>
+        </div>
+
+        <div class="row" style="margin-top:12px;">
+          <button class="btn-ghost disabled" id="btnUndo" type="button" title="Revert your last throw (hit or miss)">↩ Undo last throw</button>
         </div>
 
         <div class="row" style="margin-top:12px;">
@@ -366,7 +371,7 @@
       onAuthStateChanged, signOut
     } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
     import {
-      getDatabase, ref, onValue, runTransaction, push, serverTimestamp,
+      getDatabase, ref, onValue, runTransaction, push, set, remove, serverTimestamp,
       query, limitToLast, orderByChild, startAt
     } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
 
@@ -381,7 +386,7 @@
       appId: "1:518662869581:web:672c48cf33a27772d54204"
     };
 
-    const REVISION = "rev-2026-05-02-v12";
+    const REVISION = "rev-2026-05-02-v13";
 
     const TARGETS = [
       ...Array.from({length:20}, (_,i)=>({ key:`D${i+1}`, label:`D${i+1}` })),
@@ -432,6 +437,7 @@ const btnStartNew = document.getElementById("btnStartNew");
     const btnHit2 = document.getElementById("btnHit2");
     const btnHit3 = document.getElementById("btnHit3");
     const btnMiss = document.getElementById("btnMiss");
+    const btnUndo = document.getElementById("btnUndo");
     const btnSaveDone = document.getElementById("btnSaveDone");
 let uid = null;
     let unsubUser = null;
@@ -440,6 +446,8 @@ let uid = null;
     let unsubHeat = null;
     let model = null; // { activeSession, lifetime, sessions: [] }
     let tick = null;
+    /** @type {null | { startedAtMs:number, key:string, prevLd:object, fullSessionBefore:object, finishingShot?:boolean, lastSavedSessionKey?:string }} */
+    let pendingUndo = null;
 
     // Board sort preference
     let boardSort = localStorage.getItem("dt_boardSort") || "order";
@@ -790,6 +798,7 @@ function render(){
       enable(btnHit2, canLog);
       enable(btnHit3, canLog);
       enable(btnMiss, canLog);
+      enable(btnUndo, signedIn && !!pendingUndo);
       enable(btnSaveDone, signedIn && !!sess && isFinished(sess));
 
       // Timer UI
@@ -973,6 +982,7 @@ function render(){
     }
 
     async function startNewSession(){
+      pendingUndo = null;
       await tx((u)=>{
         u.activeSession = defaultSession();
       });
@@ -1000,21 +1010,30 @@ function render(){
     }
 
         async function logResult(type){ // "hit1"|"hit2"|"hit3"|"miss"
-      let finishedNow = false;
+      if (!uid) return;
+      let capturedUndo = null;
 
-      await tx((u)=>{
-        if (!u.activeSession) return;
+      const rootRef = ref(db, `users/${uid}`);
+      const result = await runTransaction(rootRef, (current)=>{
+        capturedUndo = null;
+        const u = current || {};
+        ensureLifetime(u);
+        if (!u.activeSession) return u;
         u.activeSession = ensureSession(u.activeSession);
 
         const sess = u.activeSession;
         const tmr = sess.timer || {};
-        if (tmr.isPaused) return;
+        if (tmr.isPaused) return u;
 
         const cur = sess.flow?.cursorIndex ?? 0;
         const idx = nextIndexFrom(sess, cur);
-        if (idx === -1) return;
+        if (idx === -1) return u;
 
         const key = TARGETS[idx].key;
+        const fullSessionBefore = JSON.parse(JSON.stringify(ensureSession(sess)));
+        const prevLd = JSON.parse(JSON.stringify(u.lifetime.doubles[key] || { attempts:0, hits:0, hits1:0, hits2:0, hits3:0 }));
+        const startedAtMs = sess.meta?.startedAtMs;
+
         const sd = sess.doubles[key] || { attempts:0, completed:false, hitDart:null, completedAt:null };
         const ld = u.lifetime.doubles[key] || { attempts:0, hits:0, hits1:0, hits2:0, hits3:0 };
 
@@ -1052,10 +1071,10 @@ function render(){
           }
         }
 
-        finishedNow = isFinished(sess);
+        const finishingShot = isFinished(sess);
 
         // If finished, freeze timer by pausing and accumulating final segment
-        if (finishedNow){
+        if (finishingShot){
           const now = Date.now();
           const t = sess.timer;
           if (!t.isPaused){
@@ -1065,15 +1084,72 @@ function render(){
             t.pauseStartedAtMs = now;
           }
         }
+
+        capturedUndo = { startedAtMs, key, prevLd, fullSessionBefore, finishingShot };
+        return u;
       });
 
-      if (finishedNow){
-        // Auto-save immediately when all doubles are completed
+      if (!result.committed || !capturedUndo) return;
+
+      if (capturedUndo.finishingShot){
         try{
-          await saveSession();
+          const pushedKey = await saveSession();
+          pendingUndo = { ...capturedUndo, lastSavedSessionKey: pushedKey || undefined };
         }catch(err){
           showError(err);
+          pendingUndo = { ...capturedUndo, lastSavedSessionKey: undefined };
         }
+      } else {
+        pendingUndo = capturedUndo;
+      }
+    }
+
+    async function undoLastThrow(){
+      if (!uid || !pendingUndo) return;
+      const p = pendingUndo;
+
+      try{
+        let undoDenied = null;
+        const undoResult = await runTransaction(ref(db, `users/${uid}`), (current)=>{
+          const u = current || {};
+          ensureLifetime(u);
+
+          const restoreShot = ()=>{
+            u.activeSession = ensureSession(JSON.parse(JSON.stringify(p.fullSessionBefore)));
+            u.lifetime.doubles[p.key] = JSON.parse(JSON.stringify(p.prevLd));
+          };
+
+          if (p.finishingShot || p.lastSavedSessionKey){
+            if (u.activeSession){
+              undoDenied = "Can't undo — a new session is already in progress. Remove the duplicate history entry in Firebase console if needed.";
+              return u;
+            }
+            restoreShot();
+            return u;
+          }
+
+          if (!u.activeSession || u.activeSession.meta?.startedAtMs !== p.startedAtMs){
+            undoDenied = "Can't undo — session changed (reload or new session).";
+            return u;
+          }
+
+          restoreShot();
+          return u;
+        });
+
+        if (undoDenied){
+          alert(undoDenied);
+          return;
+        }
+        if (!undoResult.committed) return;
+
+        if (p.lastSavedSessionKey){
+          await remove(ref(db, `users/${uid}/sessions/${p.lastSavedSessionKey}`));
+        }
+
+        pendingUndo = null;
+      }catch(err){
+        showError(err);
       }
     }
 
@@ -1103,11 +1179,14 @@ function render(){
       });
 
       if (payload && uid){
-        await push(ref(db, `users/${uid}/sessions`), payload);
+        const sessionsRef = ref(db, `users/${uid}/sessions`);
+        const newRef = push(sessionsRef);
+        await set(newRef, payload);
         alert("✅ Session saved automatically.");
-      } else {
-        alert("Finish all doubles first (or session not loaded).");
+        return newRef.key;
       }
+      alert("Finish all doubles first (or session not loaded).");
+      return null;
     }
 
         if (elSinceDate){ elSinceDate.addEventListener("change", ()=>{ subscribeSinceStats(); }); }
@@ -1169,6 +1248,8 @@ function render(){
     btnHit3.addEventListener("click", ()=> logResult("hit3").catch(showError));
     btnMiss.addEventListener("click", ()=> logResult("miss").catch(showError));
 
+    btnUndo.addEventListener("click", ()=> undoLastThrow().catch(showError));
+
     btnSaveDone.addEventListener("click", ()=> saveSession().catch(showError));
 
     onAuthStateChanged(auth, (user)=>{
@@ -1176,6 +1257,7 @@ function render(){
       if (unsubSessions){ unsubSessions(); unsubSessions = null; }
       if (unsubHeat){ unsubHeat(); unsubHeat = null; }
       __heatLastVersion = -1;
+      pendingUndo = null;
       model = { activeSession:null, lifetime:null, sessions:[], heat:null };
 
       if (user){
