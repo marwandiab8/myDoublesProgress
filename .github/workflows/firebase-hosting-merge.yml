@@ -1,0 +1,45 @@
+# Deploy Firebase Hosting on push to main/master, or manually (Actions tab).
+#
+# --- Connect GitHub to Firebase (one-time) ---
+# 1. Firebase console → Project settings → Service accounts
+# 2. "Generate new private key" → save the JSON file
+# 3. GitHub repo → Settings → Secrets and variables → Actions → New secret
+#      Name:  FIREBASE_SERVICE_ACCOUNT_MYDOUBLESPROGRESS
+#             (must match: FIREBASE_SERVICE_ACCOUNT_ + PROJECT_ID in ALL_CAPS)
+#      Value: paste the ENTIRE JSON (field "project_id" should be "mydoublesprogress")
+# 4. Google Cloud Console → IAM → find that service account → ensure it has a role
+#    that can deploy Hosting (e.g. "Firebase Hosting Admin" or "Editor" on the project)
+#
+# --- Confirm it works ---
+# - Push to main or master, OR: Actions → "Deploy to Firebase Hosting" → Run workflow
+# - Open the run → deploy job should succeed; Firebase → Hosting → new release
+
+name: Deploy to Firebase Hosting
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check Hosting files exist
+        run: |
+          test -f firebase.json || (echo "Missing firebase.json" && exit 1)
+          test -d public || (echo "Missing public/ directory" && exit 1)
+          echo "firebase.json + public/ OK"
+
+      - uses: FirebaseExtended/action-hosting-deploy@v0.10.0
+        with:
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_MYDOUBLESPROGRESS }}
+          projectId: mydoublesprogress
+          channelId: live
+          disableComment: true
