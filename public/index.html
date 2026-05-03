@@ -1,0 +1,1242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Practice finishing every double on the dartboard. Log hits per dart, track time with pause, and sync progress with Google sign-in." />
+  <meta name="theme-color" content="#0f0f10" />
+  <link rel="preconnect" href="https://www.gstatic.com" crossorigin />
+  <title>Dart Tracker — Finish All Doubles Timer</title>
+  <style>
+    :root{
+      --bg:#0f0f10; --panel:#171718; --panel2:#1e1e20; --border:#2b2b2e;
+      --text:#f2f2f2; --muted:#b9b9b9;
+      --ok:#7CFC90; --warn:#ffcc66; --err:#ff6b6b; --blue:#8ab4ff;
+    }
+    body{
+      background:var(--bg); color:var(--text);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+      margin:0; min-height:100vh; display:flex; justify-content:center; align-items:flex-start;
+      padding:22px;
+    }
+    .wrap{width:min(1160px,100%); display:grid; gap:14px;}
+    .card{
+      background:var(--panel); border:1px solid var(--border); border-radius:18px;
+      box-shadow:0 10px 35px rgba(0,0,0,.35); padding:18px;
+    }
+    h1{margin:0 0 8px; font-size:18px; letter-spacing:.2px}
+    h2{margin:0; font-size:14px; color:var(--muted); font-weight:950}
+    .sub{color:var(--muted); font-size:13px; line-height:1.35}
+    .row{display:flex; gap:10px; flex-wrap:wrap; align-items:center}
+    .grow{flex:1}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace}
+    .pill{
+      display:inline-flex; align-items:center; gap:8px;
+      background:var(--panel2); border:1px solid var(--border);
+      padding:8px 10px; border-radius:999px; font-size:12.5px; color:var(--muted);
+    }
+    .pill strong{color:var(--text)}
+    .grid{display:grid; grid-template-columns:1fr; gap:14px;}
+    @media (min-width: 980px){ .grid{grid-template-columns: 430px 1fr;} }
+
+    .timer{
+      font-size:96px; font-weight:950; letter-spacing:.4px;
+      margin:6px 0 0; line-height:1;
+      color:var(--blue);
+    }
+
+    .timerRow{
+      display:flex; align-items:center; justify-content:space-between; gap:12px;
+    }
+    .timerRow .timer{margin:0; flex:1; min-width:260px;}
+    .btn-big{
+      width:100%;
+      display:inline-flex; align-items:center; justify-content:center; gap:10px;
+      font-size:20px; padding:18px 16px;
+    }
+    .btn-progress{display:flex; justify-content:center; align-items:center; cursor:default; padding:24px 16px;}
+    #progressPill{font-size:clamp(56px,5.2vw,88px); font-weight:950; display:inline-block;}
+    /* Desktop tuning: keep Progress readable from ~8ft but less oversized on wide screens */
+    @media (min-width: 980px){
+      .btn-progress{padding:18px 16px;}
+      #progressPill{font-size:clamp(40px,2.6vw,66px);}
+    }
+    .btn-pause{
+      display:inline-flex; align-items:center; justify-content:center;
+      padding:22px 22px; font-size:24px;
+      white-space:nowrap;
+    }
+    .currentBlock{display:flex; flex-direction:column; gap:6px;}
+    .currentTitle{
+      font-size:13px; color:var(--muted); font-weight:950;
+      letter-spacing:.3px; text-transform:uppercase;
+    }
+
+
+    .targetRow{
+      display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+      margin-top:10px;
+    }
+    .bigTarget{
+      font-size:72px; font-weight:950; color:#39FF14;
+      margin:0; line-height:1;
+    }
+    .upnext{
+      display:flex; flex-wrap:wrap; gap:10px;
+      margin:0;
+      align-items:center;
+    }
+    .tag{
+      display:inline-flex; align-items:center; justify-content:center;
+      padding:10px 12px; border-radius:999px;
+      border:1px solid var(--border);
+      background:var(--panel2);
+      font-size:38px; font-weight:950;
+      line-height:1;
+      color:#d8d8d8;
+    }
+    .tag.current{
+      border-color:#2f6a3f; background:#10331a; color:var(--ok);
+    }
+    .tag.next{
+      border-color:#254a91; background:#0f2348; color:#cfe0ff;
+    }
+
+
+    button{
+      border:none; border-radius:12px; font-weight:950; font-size:32px;
+      padding:32px 32px; cursor:pointer; transition:transform .03s ease-in;
+    }
+    button:active{transform:scale(.99)}
+    .btn-google{background:#4285F4;color:#fff}
+    .btn-alt{background:#2a2a2a;color:#ddd;border:1px solid #3a3a3a}
+    .btn-ghost{background:transparent;color:#d7d7d7;border:1px solid #3a3a3a}
+          .revision-chip{pointer-events:none;cursor:default;user-select:text;opacity:.9}
+.btn-ok{background:#10331a;color:var(--ok);border:1px solid #2f6a3f}
+    .btn-err{background:#331010;color:var(--err);border:1px solid #6a2f2f}
+    .btn-warn{background:#2b220f;color:var(--warn);border:1px solid #6a5a2f}
+    .btn-blue{background:#0f2348;color:#cfe0ff;border:1px solid #254a91}
+    .disabled{opacity:.5; pointer-events:none}
+
+    table{
+      width:100%; border-collapse:separate; border-spacing:0;
+      overflow:hidden; border-radius:14px; border:1px solid var(--border);
+      background:var(--panel2); font-size:13px;
+    }
+    th,td{padding:10px 10px; border-bottom:1px solid var(--border); text-align:left; vertical-align:top}
+    th{color:var(--muted); font-weight:950; font-size:12px; letter-spacing:.2px}
+    tr:last-child td{border-bottom:none}
+    .right{text-align:right}
+    .center{text-align:center}
+    .muted{color:var(--muted)}
+    .ok{color:var(--ok)}
+    .warn{color:var(--warn)}
+    .err{color:var(--err)}
+    .note{
+      background:#141415; border:1px solid var(--border); border-radius:14px;
+      padding:12px; color:var(--muted); font-size:12.5px; line-height:1.4;
+    }
+    .errorBox{
+      margin-top:10px; background:#1b1010; border:1px solid #5b2a2a; color:#ffd6d6;
+      border-radius:14px; padding:10px; font-size:12.5px; white-space:pre-wrap; display:none;
+    }
+    .mini{font-size:12px;color:var(--muted)}
+    .kbd{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; border:1px solid #3a3a3a; border-bottom-width:2px; padding:2px 6px; border-radius:8px; color:#ddd;}
+  
+    .dateInput{
+      background:transparent;
+      border:1px solid var(--border);
+      color:var(--text);
+      padding:6px 10px;
+      border-radius:10px;
+      font-size:14px;
+      line-height:1;
+    }
+    .dateInput::-webkit-calendar-picker-indicator{
+      filter: invert(1);
+      opacity: 0.9;
+    }
+
+    .selectInput{
+      background:transparent;
+      border:1px solid var(--border);
+      color:var(--text);
+      padding:6px 10px;
+      border-radius:10px;
+      font-size:14px;
+      line-height:1.1;
+      max-width: 260px;
+    }
+    .selectInput option{
+      background: var(--panel);
+      color: var(--text);
+    }
+
+
+    /* Heatmap (last 90 days) */
+    .heatWrap{margin-top:10px;}
+    .heatGrid{
+      display:grid;
+      grid-template-columns: repeat(30, 14px);
+      gap:4px;
+      padding:10px;
+      background:var(--panel2);
+      border:1px solid var(--border);
+      border-radius:14px;
+      overflow:auto;
+      max-width:100%;
+    }
+    .heatCell{
+      width:14px; height:14px;
+      border-radius:3px;
+      background:#2a2a2a;
+      cursor:pointer;
+      transition:transform .03s ease-in, outline .12s ease-in, box-shadow .12s ease-in;
+    }
+    .heatCell:hover{outline:2px solid #7a7a7a; outline-offset:1px;}
+    .heat0{background:#2a2a2a;}
+    .heat1{background:#f97316; box-shadow:0 0 8px rgba(249,115,22,.22);}
+    .heat2{background:#fb923c; box-shadow:0 0 10px rgba(251,146,60,.22);}
+    .heat3{background:#fdba74; box-shadow:0 0 12px rgba(253,186,116,.22);}
+    .heatSelected{outline:2px solid #ffffff33; outline-offset:1px;}
+
+</style>
+</head>
+<body>
+  <div class="wrap">
+
+    <div class="card">
+      <div class="row">
+        <div class="grow">
+          <h1>Dart Tracker — Finish All Doubles (Timer + Pause)</h1>
+          <div class="sub">
+            Log each double attempt as: <strong>Hit on dart 1 / 2 / 3</strong> or <strong>Miss</strong>.
+            You can miss a double and continue — next round you’ll start again at the earliest unfinished double.
+            Timer tracks <strong>active time only</strong> (pause for washroom breaks).
+          </div>
+        </div>
+        <div class="pill"><strong>Status</strong> <span id="authStatus" class="warn">Not signed in</span></div>
+      </div>
+
+      <div class="row" style="margin-top:10px; flex-wrap:wrap;">
+        <button class="btn-google" id="btnLoginPopup">Sign in with Google</button>
+        <button class="btn-ghost disabled" id="btnLogout">Sign out</button>
+        <div class="btn-ghost revision-chip" id="revisionChip" title="Deployed revision"></div>
+      </div>
+
+      
+
+        <div class="note" style="margin-top:12px;">
+          <div><strong>Quick rules</strong></div>
+          <ul style="margin:8px 0 0 18px; padding:0;">
+            <li>Each double attempt is logged once: Hit on 1/2/3 or Miss.</li>
+            <li>If you miss a double, it stays unfinished and will be attempted again next round.</li>
+            <li>The app automatically cycles back to the <strong>earliest unfinished double</strong> until everything is closed.</li>
+            <li>Timer excludes paused time.</li>
+          </ul>
+        </div>
+
+<div class="errorBox" id="errorBox"></div>
+    </div>
+
+    <div class="grid">
+
+      <div class="card">
+        <h2>Session</h2>
+
+        
+        
+        <div id="sessionTop"></div>
+<div class="row" style="margin-top:12px;">
+          <button class="btn-warn disabled btn-big" id="btnStartNew">Start new session</button>
+        </div>
+
+        <div class="timerRow" style="margin-top:8px;">
+          <div class="timer mono" id="timer">00:00</div>
+          <button class="btn-blue disabled btn-pause" id="btnPauseResume">Pause</button>
+        </div>
+        <div class="mini" id="timerNote">—</div>
+
+        <div class="row" style="margin-top:10px;">
+          <button class="btn-blue btn-big btn-progress" id="btnProgress" type="button">
+            <span id="progressPill">—</span>
+          </button>
+        </div>
+
+        <div class="targetRow">
+          <div class="currentBlock">
+            <div class="currentTitle">Current double</div>
+            <div class="bigTarget" id="targetLabel">—</div>
+          </div>
+          <div class="upnext" id="upNextWrap" style="display:none;">
+            <span class="tag next" id="tagNext1">—</span>
+            <span class="tag next" id="tagNext2">—</span>
+            <span class="tag next" id="tagNext3">—</span>
+            <span class="tag next" id="tagNext4">—</span>
+          </div>
+        </div>
+        <div class="sub" id="targetHint">Sign in, then start a session.</div>
+        <div class="row" style="margin-top:12px;">
+          <button class="btn-ok disabled" id="btnHit1">✅ Hit on 1</button>
+          <button class="btn-ok disabled" id="btnHit2">✅ Hit on 2</button>
+          <button class="btn-ok disabled" id="btnHit3">✅ Hit on 3</button>
+          <button class="btn-err disabled" id="btnMiss">❌ Miss (0/3)</button>
+        </div>
+
+        <div class="row" style="margin-top:12px;">
+          <button class="btn-blue disabled" id="btnSaveDone">Save session (auto)</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="row" style="justify-content:space-between; align-items:flex-end; gap:10px;">
+          <h2>Session board (D1 → DBULL)</h2>
+          <div class="row" style="gap:10px; flex-wrap:wrap; justify-content:flex-end;">
+            <label class="pill" style="display:flex; align-items:center; gap:8px;">
+              <strong>Sort</strong>
+              <select id="boardSort" class="selectInput" title="Sort the session board">
+                <option value="order">Default (D1 → DBULL)</option>
+                <option value="openFirst">Open first</option>
+                <option value="sessDesc">Session throws (high → low)</option>
+                <option value="sessAsc">Session throws (low → high)</option>
+                <option value="lifeDesc">Lifetime throws (high → low)</option>
+                <option value="lifeAsc">Lifetime throws (low → high)</option>
+                <option value="lifePctDesc">Lifetime % (high → low)</option>
+                <option value="sinceDesc">From throws (high → low)</option>
+                <option value="sinceAsc">From throws (low → high)</option>
+                <option value="sincePctDesc">From % (high → low)</option>
+              </select>
+            </label>
+            <span class="pill"><strong>Lifetime</strong></span>
+            <label class="pill" style="display:flex; align-items:center; gap:8px;">
+              <strong>From</strong>
+              <input type="date" id="sinceDate" class="dateInput" />
+            </label>
+          </div>
+        </div>
+
+        <table style="margin-top:10px;">
+          <thead>
+            <tr>
+              <th>Double</th>
+              <th class="right">Throws</th>
+              <th class="center">Status</th>
+              <th class="center">Hit dart</th>
+              <th class="right">Lifetime</th>
+              <th class="right">Lifetime %</th>
+              <th class="right">From</th>
+              <th class="right">From %</th>
+            </tr>
+          </thead>
+          <tbody id="boardBody">
+            <tr><td colspan="8" class="muted">Sign in to load…</td></tr>
+          </tbody>
+        </table>
+
+        
+        <h2 style="margin-top:16px;">Practice heatmap (last 90 days)</h2>
+        <div class="mini muted" id="heatLegend" style="margin-top:6px;">Tap a square to see details.</div>
+        <div class="heatWrap">
+          <div id="heatGrid" class="heatGrid" aria-label="Practice heatmap"></div>
+        </div>
+        <div id="heatSelectedBox" class="note" style="margin-top:10px; display:none;"></div>
+
+<h2 style="margin-top:16px;">Session history</h2>
+        <table style="margin-top:10px;">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th class="right">Duration</th>
+            </tr>
+          </thead>
+          <tbody id="historyBody">
+            <tr><td colspan="2" class="muted">No sessions yet…</td></tr>
+          </tbody>
+        </table>
+</div>
+      </div>
+
+    </div>
+  </div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+    import {
+      getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult,
+      onAuthStateChanged, signOut
+    } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+    import {
+      getDatabase, ref, onValue, runTransaction, push, serverTimestamp,
+      query, limitToLast, orderByChild, startAt
+    } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
+
+    // Firebase config (exact from your console)
+    const firebaseConfig = {
+      apiKey: "AIzaSyD5r9x0-2G2I7s5-dkRe1xI3_wfEyRsiyU",
+      authDomain: "mydoublesprogress.firebaseapp.com",
+      databaseURL: "https://mydoublesprogress-default-rtdb.firebaseio.com",
+      projectId: "mydoublesprogress",
+      storageBucket: "mydoublesprogress.firebasestorage.app",
+      messagingSenderId: "518662869581",
+      appId: "1:518662869581:web:672c48cf33a27772d54204"
+    };
+
+    const REVISION = "rev-2026-05-02-v12";
+
+    const TARGETS = [
+      ...Array.from({length:20}, (_,i)=>({ key:`D${i+1}`, label:`D${i+1}` })),
+      { key:"DBULL", label:"DBULL" }
+    ];
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getDatabase(app);
+    const provider = new GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: "select_account" });
+
+    // If we came back from a redirect sign-in flow, finalize it (best-effort)
+    getRedirectResult(auth).catch(()=>{});
+
+
+    // UI
+const elAuthStatus = document.getElementById("authStatus");
+    const elErrorBox = document.getElementById("errorBox");
+
+    const elTimer = document.getElementById("timer");
+    const elTimerNote = document.getElementById("timerNote");
+    const elTargetLabel = document.getElementById("targetLabel");
+    const elTargetHint = document.getElementById("targetHint");
+    const elProgressPill = document.getElementById("progressPill");
+        const elBoardBody = document.getElementById("boardBody");
+    const elHistoryBody = document.getElementById("historyBody");
+
+    const elHeatGrid = document.getElementById("heatGrid");
+    const elHeatLegend = document.getElementById("heatLegend");
+    const elHeatSelectedBox = document.getElementById("heatSelectedBox");
+
+    const elUpNextWrap = document.getElementById("upNextWrap");
+        const elTagNext1 = document.getElementById("tagNext1");
+    const elTagNext2 = document.getElementById("tagNext2");
+    const elTagNext3 = document.getElementById("tagNext3");
+    const elTagNext4 = document.getElementById("tagNext4");
+
+    const btnLoginPopup = document.getElementById("btnLoginPopup");
+const btnLogout = document.getElementById("btnLogout");
+    const revisionChip = document.getElementById("revisionChip");
+    const elSinceDate = document.getElementById("sinceDate");
+    const elBoardSort = document.getElementById("boardSort");
+    if (revisionChip) revisionChip.textContent = "Revision: " + REVISION;
+const btnStartNew = document.getElementById("btnStartNew");
+    const btnPauseResume = document.getElementById("btnPauseResume");
+        const btnHit1 = document.getElementById("btnHit1");
+    const btnHit2 = document.getElementById("btnHit2");
+    const btnHit3 = document.getElementById("btnHit3");
+    const btnMiss = document.getElementById("btnMiss");
+    const btnSaveDone = document.getElementById("btnSaveDone");
+let uid = null;
+    let unsubUser = null;
+    let unsubSessions = null;
+    let unsubSince = null;
+    let unsubHeat = null;
+    let model = null; // { activeSession, lifetime, sessions: [] }
+    let tick = null;
+
+    // Board sort preference
+    let boardSort = localStorage.getItem("dt_boardSort") || "order";
+    if (elBoardSort) elBoardSort.value = boardSort;
+
+    function enable(el, on=true){
+      el.classList.toggle("disabled", !on);
+      el.disabled = !on;
+    }
+
+    function showError(err){
+      console.error(err);
+      const code = err?.code || "(no code)";
+      const msg = err?.message || String(err);
+      elErrorBox.style.display = "block";
+      elErrorBox.textContent = `${code}\n${msg}`;
+      try { elErrorBox.scrollIntoView({ block: "nearest", behavior: "smooth" }); } catch (_) {}
+    }
+
+    function setAuthStatus(text, cls){
+      elAuthStatus.textContent = text;
+      elAuthStatus.className = cls;
+    }
+
+    function defaultSession(){
+      const now = Date.now();
+      const doubles = {};
+      for (const t of TARGETS){
+        doubles[t.key] = { attempts: 0, completed: false, hitDart: null, completedAt: null };
+      }
+      return {
+        meta: { startedAtMs: now, createdAt: serverTimestamp() },
+        timer: { isPaused:false, pauseStartedAtMs:null, activeMsAccum:0, lastResumedAtMs: now },
+        flow: { cursorIndex:0 },
+        doubles
+      };
+    }
+
+    function defaultLifetime(){
+      const doubles = {};
+      for (const t of TARGETS){
+        doubles[t.key] = { attempts: 0, hits: 0, hits1: 0, hits2: 0, hits3: 0 };
+      }
+      return { doubles };
+    }
+
+    function fmt(ms){
+      const sec = Math.floor(ms/1000);
+      const m = Math.floor(sec/60);
+      const s = sec % 60;
+      const h = Math.floor(m/60);
+      const mm = m % 60;
+      if (h>0) return `${h}:${String(mm).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+      return `${mm}:${String(s).padStart(2,'0')}`;
+    }
+
+    function ensureLifetime(u){
+      if (!u.lifetime) u.lifetime = defaultLifetime();
+      if (!u.lifetime.doubles) u.lifetime.doubles = defaultLifetime().doubles;
+      for (const t of TARGETS){
+        if (!u.lifetime.doubles[t.key]) u.lifetime.doubles[t.key] = { attempts:0, hits:0, hits1:0, hits2:0, hits3:0 };
+      }
+    }
+
+    function ensureSession(sess){
+      if (!sess) return defaultSession();
+      if (!sess.meta?.startedAtMs) sess.meta = { ...(sess.meta||{}), startedAtMs: Date.now() };
+      if (!sess.timer) sess.timer = { isPaused:false, pauseStartedAtMs:null, activeMsAccum:0, lastResumedAtMs: sess.meta.startedAtMs };
+      if (sess.timer.lastResumedAtMs == null) sess.timer.lastResumedAtMs = sess.meta.startedAtMs;
+      if (!sess.flow) sess.flow = { cursorIndex:0 };
+      if (!sess.doubles) sess.doubles = defaultSession().doubles;
+      for (const t of TARGETS){
+        if (!sess.doubles[t.key]) sess.doubles[t.key] = { attempts:0, completed:false, hitDart:null, completedAt:null };
+      }
+      return sess;
+    }
+
+    function earliestUnfinishedIndex(sess){
+      for (let i=0;i<TARGETS.length;i++){
+        const k = TARGETS[i].key;
+        if (!sess.doubles?.[k]?.completed) return i;
+      }
+      return -1;
+    }
+
+    function nextIndexFrom(sess, startIdx){
+      for (let i=startIdx;i<TARGETS.length;i++){
+        const k = TARGETS[i].key;
+        if (!sess.doubles?.[k]?.completed) return i;
+      }
+      return -1;
+    }
+
+    function isFinished(sess){
+      return earliestUnfinishedIndex(sess) === -1;
+    }
+
+    function computeElapsed(sess){
+      if (!sess) return 0;
+      const now = Date.now();
+      const started = sess.meta?.startedAtMs || now;
+      const t = sess.timer || {};
+      const base = t.activeMsAccum || 0;
+
+      if (t.isPaused){
+        return base;
+      } else {
+        const lastBoundary = t.lastResumedAtMs ?? started;
+        return base + (now - lastBoundary);
+      }
+    }
+
+    function setUpNext(nextLabels){
+      elUpNextWrap.style.display = "flex";
+      const tags = [elTagNext1, elTagNext2, elTagNext3, elTagNext4];
+      for (let i=0;i<4;i++){
+        const v = nextLabels[i] || "—";
+        tags[i].textContent = v;
+      }
+    }
+
+    function hideUpNext(){
+      elUpNextWrap.style.display = "none";
+    }
+
+    function renderHistory(){
+      const sessions = model?.sessions || [];
+      if (!uid){
+        elHistoryBody.innerHTML = '<tr><td colspan="2" class="muted">Sign in to load…</td></tr>';
+        return;
+      }
+      if (!sessions.length){
+        elHistoryBody.innerHTML = '<tr><td colspan="2" class="muted">No sessions yet…</td></tr>';
+        return;
+      }
+      const rows = sessions.map(s=>{
+        const date = (typeof s.startedAtMs === "number") ? new Date(s.startedAtMs).toLocaleString() : "—";
+        const dur = (typeof s.activeMs === "number") ? fmt(s.activeMs) : "—";
+        return `<tr><td>${date}</td><td class="right mono">${dur}</td></tr>`;
+      });
+      elHistoryBody.innerHTML = rows.join("");
+    }
+
+    
+    function dateInputToMs(v){
+      if (!v) return null;
+      const parts = String(v).split("-").map(Number);
+      if (parts.length !== 3 || parts.some(n=>Number.isNaN(n))) return null;
+      const [y,m,d] = parts;
+      // local midnight
+      return new Date(y, m-1, d, 0,0,0,0).getTime();
+    }
+
+
+    // -------------------- Heatmap helpers --------------------
+    function msToLocalISODate(ms){
+      const d = new Date(ms);
+      const y = d.getFullYear();
+      const m = String(d.getMonth()+1).padStart(2,'0');
+      const day = String(d.getDate()).padStart(2,'0');
+      return `${y}-${m}-${day}`;
+    }
+
+    function buildHeatByDate(sessionsObj){
+      const byDate = {}; // { "YYYY-MM-DD": {count,totalActiveMs,bestActiveMs} }
+      const vals = Object.values(sessionsObj || {}).filter(Boolean);
+      for (const s of vals){
+        const ms = (typeof s.startedAtMs === "number") ? s.startedAtMs : null;
+        if (!ms) continue;
+        const key = msToLocalISODate(ms);
+        const activeMs = (typeof s.activeMs === "number") ? s.activeMs : 0;
+
+        if (!byDate[key]){
+          byDate[key] = { count: 0, totalActiveMs: 0, bestActiveMs: null };
+        }
+        byDate[key].count += 1;
+        byDate[key].totalActiveMs += activeMs;
+        byDate[key].bestActiveMs = (byDate[key].bestActiveMs == null) ? activeMs : Math.min(byDate[key].bestActiveMs, activeMs);
+      }
+      return byDate;
+    }
+
+    let __heatLastVersion = -1;
+
+    function renderHeatMap(){
+      if (!elHeatGrid || !elHeatLegend || !elHeatSelectedBox) return;
+
+      if (!uid){
+        elHeatGrid.innerHTML = "";
+        elHeatLegend.textContent = "Sign in to see your practice heatmap.";
+        elHeatSelectedBox.style.display = "none";
+        __heatLastVersion = -1;
+        return;
+      }
+
+      const heat = model?.heat || null;
+      const version = heat?.version ?? 0;
+
+      // Avoid rebuilding the grid 4x per second; only rebuild when data changes.
+      if (version === __heatLastVersion) return;
+      __heatLastVersion = version;
+
+      const byDate = heat?.byDate || {};
+
+      const today = new Date();
+      let out = "";
+      for (let i = 89; i >= 0; i--){
+        const d = new Date(today);
+        d.setDate(d.getDate() - i);
+        const dateStr = msToLocalISODate(d.getTime());
+        const info = byDate[dateStr];
+        const count = info ? info.count : 0;
+        const cls = count === 0 ? "heat0" : count === 1 ? "heat1" : count === 2 ? "heat2" : "heat3";
+        out += `<div class="heatCell ${cls}" data-date="${dateStr}" data-count="${count}" title="${dateStr} • ${count} session(s)"></div>`;
+      }
+
+      elHeatGrid.innerHTML = out;
+      elHeatLegend.innerHTML =
+        `Last 90 days. <span class="mini muted">Intensity = sessions/day</span> &nbsp;` +
+        `<span class="heatCell heat0" style="display:inline-block; vertical-align:middle;"></span>` +
+        `<span class="heatCell heat1" style="display:inline-block; vertical-align:middle; margin-left:6px;"></span>` +
+        `<span class="heatCell heat2" style="display:inline-block; vertical-align:middle; margin-left:6px;"></span>` +
+        `<span class="heatCell heat3" style="display:inline-block; vertical-align:middle; margin-left:6px;"></span>`;
+      elHeatSelectedBox.style.display = "none";
+    }
+
+    function subscribeHeatMap(){
+      if (unsubHeat){
+        unsubHeat();
+        unsubHeat = null;
+      }
+      if (!uid){
+        model.heat = null;
+        __heatLastVersion = -1;
+        renderHeatMap();
+        return;
+      }
+
+      const cutoffMs = Date.now() - (90 * 24 * 60 * 60 * 1000) - (2 * 24 * 60 * 60 * 1000); // small buffer
+      const sessionsRef = ref(db, `users/${uid}/sessions`);
+      const qHeat = query(sessionsRef, orderByChild("startedAtMs"), startAt(cutoffMs));
+      const off = onValue(qHeat, (snap)=>{
+        const val = snap.val() || {};
+        const byDate = buildHeatByDate(val);
+        const version = (model?.heat?.version || 0) + 1;
+        model.heat = { byDate, version };
+        renderHeatMap();
+      }, (err)=> showError(err));
+      unsubHeat = ()=> off();
+    }
+
+    // Heatmap click → show details
+    if (elHeatGrid){
+      elHeatGrid.addEventListener("click", (e)=>{
+        const cell = e.target.closest(".heatCell");
+        if (!cell) return;
+
+        // highlight selected
+        elHeatGrid.querySelectorAll(".heatSelected").forEach(n=> n.classList.remove("heatSelected"));
+        cell.classList.add("heatSelected");
+
+        const dateStr = cell.getAttribute("data-date");
+        const count = Number(cell.getAttribute("data-count") || "0");
+        const info = model?.heat?.byDate?.[dateStr] || null;
+
+        const dObj = new Date(dateStr + "T12:00:00");
+        const displayDate = dObj.toLocaleDateString(undefined, { weekday:"short", month:"short", day:"numeric", year:"numeric" });
+
+        if (!count || !info){
+          elHeatSelectedBox.style.display = "block";
+          elHeatSelectedBox.innerHTML = `<strong>${displayDate}</strong><div class="mini muted" style="margin-top:6px;">Rest day — no sessions saved.</div>`;
+          return;
+        }
+
+        const total = fmt(info.totalActiveMs || 0);
+        const best = fmt(info.bestActiveMs || 0);
+
+        elHeatSelectedBox.style.display = "block";
+        elHeatSelectedBox.innerHTML =
+          `<strong>${displayDate}</strong>` +
+          `<div class="row" style="margin-top:10px; gap:10px; flex-wrap:wrap;">` +
+            `<span class="pill"><strong>Sessions</strong> ${count}</span>` +
+            `<span class="pill"><strong>Total time</strong> <span class="mono">${total}</span></span>` +
+            `<span class="pill"><strong>Best time</strong> <span class="mono">${best}</span></span>` +
+          `</div>`;
+      });
+    }
+
+    function computeStatsFromSessions(sessionsObj){
+      const stats = defaultLifetime(); // { doubles: {key:{attempts,hits,...}} }
+      for (const sid of Object.keys(sessionsObj || {})){
+        const sess = sessionsObj[sid];
+        if (!sess) continue;
+        const per = sess.perDouble || sess.doubles || null;
+        if (!per) continue;
+        for (const t of TARGETS){
+          const d = per[t.key];
+          if (!d) continue;
+          const st = stats.doubles[t.key];
+          st.attempts += (d.attempts || 0);
+          if (d.completed) st.hits += 1;
+        }
+      }
+      // strip extra keys we don't need for since stats (keep attempts/hits)
+      for (const t of TARGETS){
+        const st = stats.doubles[t.key];
+        st.hits1 = 0; st.hits2 = 0; st.hits3 = 0;
+      }
+      return stats;
+    }
+
+    function subscribeSinceStats(){
+      // unsub previous
+      if (unsubSince){
+        unsubSince();
+        unsubSince = null;
+      }
+      if (!uid || !elSinceDate) { model.since = null; return; }
+
+      const sinceMs = dateInputToMs(elSinceDate.value);
+      if (!sinceMs){
+        model.since = null;
+        render();
+        return;
+      }
+
+      const sessionsRef = ref(db, `users/${uid}/sessions`);
+      const q = query(sessionsRef, orderByChild("startedAtMs"), startAt(sinceMs));
+      const off = onValue(q, (snap)=>{
+        const val = snap.val() || {};
+        const stats = computeStatsFromSessions(val);
+        model.since = { sinceMs, doubles: stats.doubles };
+        render();
+      }, (err)=> showError(err));
+      unsubSince = ()=> off();
+    }
+function render(){
+      const signedIn = !!uid;
+      const sess = model?.activeSession || null;
+      const life = model?.lifetime || null;
+      const since = model?.since || null;
+
+      enable(btnLogout, signedIn);
+      enable(btnStartNew, signedIn);
+      enable(btnPauseResume, signedIn && !!sess);
+      const canLog = signedIn && !!sess && !sess.timer?.isPaused && !isFinished(sess);
+      enable(btnHit1, canLog);
+      enable(btnHit2, canLog);
+      enable(btnHit3, canLog);
+      enable(btnMiss, canLog);
+      enable(btnSaveDone, signedIn && !!sess && isFinished(sess));
+
+      // Timer UI
+      if (!sess){
+        elTimer.textContent = "00:00";
+        elTimerNote.textContent = "No active session";
+        elProgressPill.textContent = "—";
+        elTargetLabel.textContent = "—";
+        elTargetHint.textContent = signedIn ? "Start a new session." : "Sign in to begin.";
+        hideUpNext();
+      } else {
+        const elapsed = computeElapsed(sess);
+        elTimer.textContent = fmt(elapsed);
+        const paused = !!sess.timer?.isPaused;
+        btnPauseResume.textContent = paused ? "Resume" : "Pause";
+        elTimerNote.textContent = paused ? "Paused (timer stopped)" : "Running (active time)";
+
+        const doneCount = Object.values(sess.doubles||{}).filter(d=>d.completed).length;
+        elProgressPill.textContent = `${doneCount}/${TARGETS.length}`;
+
+        const curIdx = sess.flow?.cursorIndex ?? 0;
+        const idx = nextIndexFrom(sess, curIdx);
+
+        if (idx === -1){
+          elTargetLabel.textContent = "DONE";
+          elTargetHint.textContent = "All doubles completed — saved automatically (check history).";
+          hideUpNext();
+        } else {
+          const current = TARGETS[idx].label;
+          elTargetLabel.textContent = current;
+          elTargetHint.textContent = `Log this double: Hit on 1 / 2 / 3, or Miss. `;
+
+          // Build next 4 open doubles (excluding current)
+          const nextOpen = [];
+          for (let j=idx+1;j<TARGETS.length && nextOpen.length<4;j++){
+            const k = TARGETS[j].key;
+            if (!sess.doubles?.[k]?.completed) nextOpen.push(TARGETS[j].label);
+          }
+          // If we don't have 4 yet, wrap from start (useful near end of the list)
+          if (nextOpen.length < 4){
+            for (let j=0;j<idx && nextOpen.length<4;j++){
+              const k = TARGETS[j].key;
+              if (!sess.doubles?.[k]?.completed) nextOpen.push(TARGETS[j].label);
+            }
+          }
+          setUpNext(nextOpen);
+        }
+      }
+
+      // Board table (render even if no active session)
+      if (!signedIn){
+        elBoardBody.innerHTML = '<tr><td colspan="8" class="muted">Sign in to load…</td></tr>';
+        renderHistory();
+        return;
+      }
+      if (!life){
+        elBoardBody.innerHTML = '<tr><td colspan="8" class="muted">Loading…</td></tr>';
+        renderHistory();
+        return;
+      }
+
+      const sessionForTable = sess || null;
+
+      // Build rows then sort based on the selected preference
+      const rows = TARGETS.map((t, i) => {
+        const s = sessionForTable
+          ? (sessionForTable.doubles?.[t.key] || { attempts:0, completed:false, hitDart:null })
+          : { attempts:0, completed:false, hitDart:null };
+
+        const l = life.doubles?.[t.key] || { attempts:0, hits:0 };
+        const sd = since?.doubles?.[t.key] || { attempts:0, hits:0 };
+
+        const pct = l.attempts ? (100 * (l.hits / l.attempts)) : null;
+        const spct = sd.attempts ? (100 * (sd.hits / sd.attempts)) : null;
+
+        const status = s.completed ? '<span class="ok"><strong>Done</strong></span>' : '<span class="warn">Open</span>';
+        const hitDart = s.completed ? `<span class="ok"><strong>${s.hitDart}</strong></span>` : '<span class="muted">—</span>';
+
+        return {
+          i,
+          sAttempts: s.attempts || 0,
+          sCompleted: !!s.completed,
+          lAttempts: l.attempts || 0,
+          pct: (pct == null ? -1 : pct),
+          sdAttempts: sd.attempts || 0,
+          spct: (spct == null ? -1 : spct),
+          html: `
+            <tr>
+              <td><strong>${t.label}</strong></td>
+              <td class="right">${s.attempts || 0}</td>
+              <td class="center">${status}</td>
+              <td class="center">${hitDart}</td>
+              <td class="right">${l.attempts || 0}</td>
+              <td class="right">${l.attempts ? pct.toFixed(1) + "%" : "—"}</td>
+              <td class="right">${sd.attempts || 0}</td>
+              <td class="right">${sd.attempts ? spct.toFixed(1) + "%" : "—"}</td>
+            </tr>
+          `
+        };
+      });
+
+      const sortKey = boardSort || "order";
+      rows.sort((a,b)=>{
+        const tie = a.i - b.i;
+
+        if (sortKey === "order") return tie;
+
+        if (sortKey === "openFirst"){
+          if (a.sCompleted !== b.sCompleted) return a.sCompleted ? 1 : -1; // open first
+          const d = (b.sAttempts - a.sAttempts);
+          return d !== 0 ? d : tie;
+        }
+
+        if (sortKey === "sessDesc"){
+          const d = (b.sAttempts - a.sAttempts);
+          return d !== 0 ? d : tie;
+        }
+        if (sortKey === "sessAsc"){
+          const d = (a.sAttempts - b.sAttempts);
+          return d !== 0 ? d : tie;
+        }
+
+        if (sortKey === "lifeDesc"){
+          const d = (b.lAttempts - a.lAttempts);
+          return d !== 0 ? d : tie;
+        }
+        if (sortKey === "lifeAsc"){
+          const d = (a.lAttempts - b.lAttempts);
+          return d !== 0 ? d : tie;
+        }
+        if (sortKey === "lifePctDesc"){
+          const d = (b.pct - a.pct);
+          return d !== 0 ? d : tie;
+        }
+
+        if (sortKey === "sinceDesc"){
+          const d = (b.sdAttempts - a.sdAttempts);
+          return d !== 0 ? d : tie;
+        }
+        if (sortKey === "sinceAsc"){
+          const d = (a.sdAttempts - b.sdAttempts);
+          return d !== 0 ? d : tie;
+        }
+        if (sortKey === "sincePctDesc"){
+          const d = (b.spct - a.spct);
+          return d !== 0 ? d : tie;
+        }
+
+        return tie;
+      });
+
+      elBoardBody.innerHTML = rows.map(r=>r.html).join("");
+
+
+      renderHeatMap();
+
+      renderHistory();
+    }
+
+    function startTicker(){
+      if (tick) clearInterval(tick);
+      tick = setInterval(()=>{
+        if (document.visibilityState === "hidden") return;
+        render();
+      }, 250);
+    }
+
+    document.addEventListener("visibilitychange", ()=>{
+      if (document.visibilityState === "visible" && uid) render();
+    });
+
+    async function tx(mutator){
+      if (!uid) return;
+      const rootRef = ref(db, `users/${uid}`);
+      await runTransaction(rootRef, (current)=>{
+        const u = current || {};
+        ensureLifetime(u);
+        mutator(u);
+        return u;
+      });
+    }
+
+    async function startNewSession(){
+      await tx((u)=>{
+        u.activeSession = defaultSession();
+      });
+    }
+
+    async function pauseResume(){
+      await tx((u)=>{
+        if (!u.activeSession) return;
+        u.activeSession = ensureSession(u.activeSession);
+
+        const now = Date.now();
+        const t = u.activeSession.timer;
+
+        if (t.isPaused){
+          t.isPaused = false;
+          t.lastResumedAtMs = now;
+          t.pauseStartedAtMs = null;
+        } else {
+          const last = t.lastResumedAtMs ?? u.activeSession.meta.startedAtMs ?? now;
+          t.activeMsAccum = (t.activeMsAccum || 0) + Math.max(0, now - last);
+          t.isPaused = true;
+          t.pauseStartedAtMs = now;
+        }
+      });
+    }
+
+        async function logResult(type){ // "hit1"|"hit2"|"hit3"|"miss"
+      let finishedNow = false;
+
+      await tx((u)=>{
+        if (!u.activeSession) return;
+        u.activeSession = ensureSession(u.activeSession);
+
+        const sess = u.activeSession;
+        const tmr = sess.timer || {};
+        if (tmr.isPaused) return;
+
+        const cur = sess.flow?.cursorIndex ?? 0;
+        const idx = nextIndexFrom(sess, cur);
+        if (idx === -1) return;
+
+        const key = TARGETS[idx].key;
+        const sd = sess.doubles[key] || { attempts:0, completed:false, hitDart:null, completedAt:null };
+        const ld = u.lifetime.doubles[key] || { attempts:0, hits:0, hits1:0, hits2:0, hits3:0 };
+
+        sd.attempts = (sd.attempts || 0) + 1;
+        ld.attempts = (ld.attempts || 0) + 1;
+
+        if (type !== "miss"){
+          const d = type === "hit1" ? 1 : type === "hit2" ? 2 : 3;
+          sd.completed = true;
+          sd.hitDart = d;
+          sd.completedAt = Date.now();
+
+          ld.hits = (ld.hits || 0) + 1;
+          if (d === 1) ld.hits1 = (ld.hits1 || 0) + 1;
+          if (d === 2) ld.hits2 = (ld.hits2 || 0) + 1;
+          if (d === 3) ld.hits3 = (ld.hits3 || 0) + 1;
+        }
+
+        sess.doubles[key] = sd;
+        u.lifetime.doubles[key] = ld;
+
+        // advance cursor (auto-rotate)
+        sess.flow.cursorIndex = idx + 1;
+
+        // If we're past the end OR the rest are completed but some earlier are still open,
+        // jump back to the earliest unfinished double automatically.
+        if (sess.flow.cursorIndex >= TARGETS.length) {
+          const e = earliestUnfinishedIndex(sess);
+          sess.flow.cursorIndex = (e === -1) ? (TARGETS.length - 1) : e;
+        } else {
+          const next = nextIndexFrom(sess, sess.flow.cursorIndex);
+          if (next === -1) {
+            const e = earliestUnfinishedIndex(sess);
+            sess.flow.cursorIndex = (e === -1) ? (TARGETS.length - 1) : e;
+          }
+        }
+
+        finishedNow = isFinished(sess);
+
+        // If finished, freeze timer by pausing and accumulating final segment
+        if (finishedNow){
+          const now = Date.now();
+          const t = sess.timer;
+          if (!t.isPaused){
+            const last = t.lastResumedAtMs ?? sess.meta.startedAtMs ?? now;
+            t.activeMsAccum = (t.activeMsAccum || 0) + Math.max(0, now - last);
+            t.isPaused = true;
+            t.pauseStartedAtMs = now;
+          }
+        }
+      });
+
+      if (finishedNow){
+        // Auto-save immediately when all doubles are completed
+        try{
+          await saveSession();
+        }catch(err){
+          showError(err);
+        }
+      }
+    }
+
+    async function saveSession(){
+      let payload = null;
+
+      await tx((u)=>{
+        if (!u.activeSession) return;
+        u.activeSession = ensureSession(u.activeSession);
+
+        const sess = u.activeSession;
+        if (!isFinished(sess)) return;
+
+        const now = Date.now();
+        const t = sess.timer;
+        const activeMs = t?.activeMsAccum || 0;
+
+        payload = {
+          createdAt: serverTimestamp(),
+          startedAtMs: sess.meta.startedAtMs,
+          endedAtMs: now,
+          activeMs,
+          perDouble: sess.doubles
+        };
+
+        u.activeSession = null;
+      });
+
+      if (payload && uid){
+        await push(ref(db, `users/${uid}/sessions`), payload);
+        alert("✅ Session saved automatically.");
+      } else {
+        alert("Finish all doubles first (or session not loaded).");
+      }
+    }
+
+        if (elSinceDate){ elSinceDate.addEventListener("change", ()=>{ subscribeSinceStats(); }); }
+
+        if (elBoardSort){
+          elBoardSort.addEventListener("change", ()=>{
+            boardSort = elBoardSort.value || "order";
+            localStorage.setItem("dt_boardSort", boardSort);
+            render();
+          });
+        }
+
+// Auth wiring
+    btnLoginPopup.addEventListener("click", async ()=>{
+      try{
+        await signInWithPopup(auth, provider);
+      }catch(e){
+        const code = e?.code || "";
+        // Some environments/headers block popups; redirect flow is more reliable.
+        if (code === "auth/popup-blocked" || code === "auth/operation-not-supported-in-this-environment"){
+          alert("Popup sign-in was blocked — switching to redirect sign-in…");
+          await signInWithRedirect(auth, provider);
+          return;
+        }
+        showError(e);
+      }
+    });
+    btnLogout.addEventListener("click", ()=> signOut(auth));
+    btnStartNew.addEventListener("click", async ()=>{
+      // iOS Safari can ignore programmatic smooth scroll *after* an await (no longer a user gesture).
+      // So we scroll synchronously first, then run the transaction, then scroll again as a best-effort.
+      const focusSession = ()=>{
+        const el = document.getElementById("sessionTop");
+        if (!el) return;
+
+        // 1) Hash jump (very reliable on iOS)
+        try { history.replaceState(null, "", "#sessionTop"); } catch(_) {}
+        // 2) Non-smooth scrollIntoView (more reliable than smooth on iOS)
+        try { el.scrollIntoView({ block: "start", behavior: "auto" }); } catch(_) {}
+        // 3) Precise scrollTo fallback
+        const y = el.getBoundingClientRect().top + window.pageYOffset;
+        try { window.scrollTo(0, Math.max(0, y - 8)); } catch(_) {}
+      };
+
+      try{
+        focusSession(); // run while click is still a user gesture
+        await startNewSession();
+        // After DOM/data updates, try again (some browsers need a second pass)
+        requestAnimationFrame(()=> focusSession());
+        setTimeout(focusSession, 60);
+      }catch(e){
+        showError(e);
+      }
+    });
+    btnPauseResume.addEventListener("click", ()=> pauseResume().catch(showError));
+
+    btnHit1.addEventListener("click", ()=> logResult("hit1").catch(showError));
+    btnHit2.addEventListener("click", ()=> logResult("hit2").catch(showError));
+    btnHit3.addEventListener("click", ()=> logResult("hit3").catch(showError));
+    btnMiss.addEventListener("click", ()=> logResult("miss").catch(showError));
+
+    btnSaveDone.addEventListener("click", ()=> saveSession().catch(showError));
+
+    onAuthStateChanged(auth, (user)=>{
+      if (unsubUser){ unsubUser(); unsubUser = null; }
+      if (unsubSessions){ unsubSessions(); unsubSessions = null; }
+      if (unsubHeat){ unsubHeat(); unsubHeat = null; }
+      __heatLastVersion = -1;
+      model = { activeSession:null, lifetime:null, sessions:[], heat:null };
+
+      if (user){
+        uid = user.uid;
+        setAuthStatus(`Signed in: ${user.email || user.uid}`, "ok");
+
+        // Subscribe to user (lifetime + active session)
+        const userRef = ref(db, `users/${uid}`);
+        const offUser = onValue(userRef, (snap)=>{
+          const v = snap.val() || {};
+          if (!v.lifetime) v.lifetime = defaultLifetime();
+          ensureLifetime(v);
+          if (v.activeSession) v.activeSession = ensureSession(v.activeSession);
+
+          model.activeSession = v.activeSession || null;
+          model.lifetime = v.lifetime;
+          render();
+        }, (err)=> showError(err));
+        unsubUser = ()=> offUser();
+
+        // Subscribe to session history (last 15)
+        const sessionsRef = ref(db, `users/${uid}/sessions`);
+        const q = query(sessionsRef, limitToLast(15));
+        const offSessions = onValue(q, (snap)=>{
+          const val = snap.val() || {};
+          const entries = Object.values(val)
+            .filter(Boolean)
+            .sort((a,b)=> (a.startedAtMs||0) - (b.startedAtMs||0))
+            .reverse();
+          model.sessions = entries;
+          render();
+        }, (err)=> showError(err));
+        unsubSessions = ()=> offSessions();
+
+        enable(btnLogout, true);
+        enable(btnStartNew, true);
+        startTicker();
+        // If a "From" date is selected, load stats since that date
+        subscribeSinceStats();
+        subscribeHeatMap();
+      } else {
+        uid = null;
+        setAuthStatus("Not signed in", "warn");
+
+        enable(btnLogout, false);
+        enable(btnStartNew, false);
+        enable(btnPauseResume, false);
+        enable(btnHit1, false); enable(btnHit2, false); enable(btnHit3, false); enable(btnMiss, false);
+        enable(btnSaveDone, false);
+
+        elBoardBody.innerHTML = '<tr><td colspan="8" class="muted">Sign in to load…</td></tr>';
+        elHistoryBody.innerHTML = '<tr><td colspan="2" class="muted">Sign in to load…</td></tr>';
+
+        if (tick) clearInterval(tick);
+        if (unsubHeat){ unsubHeat(); unsubHeat = null; }
+        __heatLastVersion = -1;
+        render();
+      }
+    });
+
+    render();
+  </script>
+</body>
+</html>
