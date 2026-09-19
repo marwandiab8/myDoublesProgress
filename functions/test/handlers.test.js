@@ -10,18 +10,24 @@ Object.assign(process.env, {
   TIME_LEFT_CONNECTION_ID: "conn-1",
   TIME_LEFT_SINGLE_INGEST_ENDPOINT: "https://time-left.test/ingestOne",
   TIME_LEFT_BATCH_INGEST_ENDPOINT: "https://time-left.test/ingestBatch",
+  TIME_LEFT_LIFE_EVENT_ENDPOINT: "https://time-left.test/lifeEvents",
   MYDOUBLE_OWNER_UID: "owner-uid",
   MYDOUBLE_APP_BASE_URL: "https://app.test",
   MYDOUBLE_TIMEZONE: "America/Toronto",
 });
 
 const fetchCalls = [];
+// A response may carry `_status` to simulate an HTTP error from Time Left.
 let timeLeftResponse = () => ({ created: 1 });
 global.fetch = async (url, init) => {
   const body = JSON.parse(init.body);
   fetchCalls.push({ url, headers: init.headers, body, bytes: Buffer.byteLength(init.body) });
-  return { ok: true, status: 200, text: async () => JSON.stringify(timeLeftResponse(body)) };
+  const response = timeLeftResponse(body, url);
+  const status = response._status || 200;
+  return { ok: status < 400, status, text: async () => JSON.stringify(response) };
 };
+const cardCalls = () => fetchCalls.filter((call) => call.url.endsWith("/ingestOne"));
+const lifeEventCalls = () => fetchCalls.filter((call) => call.url.endsWith("/lifeEvents"));
 
 const dbReads = [];
 let storedSessions = {};
@@ -81,8 +87,8 @@ test("a session written by the owner is sent to Time Left with the right date an
     change(null, eveningSession), { params: { uid: "owner-uid", sessionId: "s1" } },
   );
 
-  assert.equal(fetchCalls.length, 1);
-  const [call] = fetchCalls;
+  assert.equal(cardCalls().length, 1);
+  const [call] = cardCalls();
   assert.equal(call.url, "https://time-left.test/ingestOne");
   assert.equal(call.headers.Authorization, "Bearer test-token");
   assert.equal(call.body.calendarId, "cal-1");
@@ -96,7 +102,7 @@ test("a deleted session is reported as deletedFromSource, and another user's ses
   await triggers.syncMyDoubleSessionToTimeLeft.run(
     change(eveningSession, null), { params: { uid: "owner-uid", sessionId: "s1" } },
   );
-  assert.equal(fetchCalls[0].body.item.syncStatus, "deletedFromSource");
+  assert.equal(cardCalls()[0].body.item.syncStatus, "deletedFromSource");
 
   fetchCalls.length = 0;
   await triggers.syncMyDoubleSessionToTimeLeft.run(
@@ -174,4 +180,88 @@ test("with no errors there is no errorSummary", async () => {
   const out = await callBackfill({ token: "test-token" });
   assert.equal(out.body.errorSummary, undefined);
   assert.equal(out.body.failed, 0);
+});
+
+// ---- the life event that gives the Activity dashboard a timed session ----
+
+test("a saved session sends its life event first, then its card, with the duration and the same source key", async () => {
+  await triggers.syncMyDoubleSessionToTimeLeft.run(
+    change(null, eveningSession), { params: { uid: "owner-uid", sessionId: "s1" } },
+  );
+
+  assert.deepEqual(fetchCalls.map((call) => call.url), ["https://time-left.test/lifeEvents", "https://time-left.test/ingestOne"]);
+  const [event] = lifeEventCalls();
+  assert.equal(event.headers.Authorization, "Bearer test-token");
+  assert.equal(event.body.calendarId, "cal-1");
+  assert.equal(event.body.connectionId, "conn-1");
+  assert.equal(event.body.integrationId, "conn-1", "the connection id, since the connection has no integrationId");
+  const item = event.body.item;
+  assert.equal(item.durationSeconds, 1200);
+  assert.equal(item.activityFamily, "darts");
+  assert.equal(item.eventClass, "completed_activity");
+  assert.equal(item.startAt, new Date(eveningSession.startedAtMs).toISOString());
+  assert.equal(item.sourceEventId, "users/owner-uid/sessions/s1");
+  assert.equal(item.sourceEventId, cardCalls()[0].body.item.sourceDocumentPath, "same key as the card's own life event");
+  assert.equal(item.metrics.darts, 10); // D1: 1 dart; Bull: two missed visits (6) then a hit on dart 3 = 9
+});
+
+test("a deleted session sends only the card, never a life event", async () => {
+  await triggers.syncMyDoubleSessionToTimeLeft.run(
+    change(eveningSession, null), { params: { uid: "owner-uid", sessionId: "s1" } },
+  );
+  assert.equal(lifeEventCalls().length, 0);
+  assert.equal(cardCalls().length, 1);
+});
+
+test("if the life event is refused, the card is still sent", async () => {
+  for (const refusal of [{ _status: 409, code: "idempotency_conflict" }, { _status: 500, message: "boom" }, { _status: 403 }]) {
+    fetchCalls.length = 0;
+    timeLeftResponse = (body, url) => (url.endsWith("/lifeEvents") ? refusal : { created: 1 });
+    await triggers.syncMyDoubleSessionToTimeLeft.run(
+      change(null, eveningSession), { params: { uid: "owner-uid", sessionId: "s1" } },
+    );
+    assert.equal(lifeEventCalls().length, 1, `life event attempted (${refusal._status})`);
+    assert.equal(cardCalls().length, 1, `card still sent after a ${refusal._status}`);
+  }
+});
+
+test("with the life-event endpoint left empty, only the card is sent", async () => {
+  const saved = process.env.TIME_LEFT_LIFE_EVENT_ENDPOINT;
+  process.env.TIME_LEFT_LIFE_EVENT_ENDPOINT = "";
+  try {
+    await triggers.syncMyDoubleSessionToTimeLeft.run(
+      change(null, eveningSession), { params: { uid: "owner-uid", sessionId: "s1" } },
+    );
+  } finally {
+    process.env.TIME_LEFT_LIFE_EVENT_ENDPOINT = saved;
+  }
+  assert.equal(lifeEventCalls().length, 0);
+  assert.equal(cardCalls().length, 1);
+});
+
+test("a session with no start time sends no life event, but still sends its card", async () => {
+  await triggers.syncMyDoubleSessionToTimeLeft.run(
+    change(null, { perDouble: {} }), { params: { uid: "owner-uid", sessionId: "s1" } },
+  );
+  assert.equal(lifeEventCalls().length, 0);
+  assert.equal(cardCalls().length, 1);
+});
+
+test("the backfill still sends cards only; it doesn't retry life events Time Left already holds", async () => {
+  storedSessions = { s1: eveningSession, s2: eveningSession };
+  await callBackfill({ token: "test-token" });
+  assert.equal(lifeEventCalls().length, 0);
+  assert.ok(fetchCalls.length > 0 && fetchCalls.every((call) => call.url.endsWith("/ingestBatch")));
+});
+
+test("an integration id set in the environment is the one sent with the life event", async () => {
+  process.env.TIME_LEFT_INTEGRATION_ID = "integration-9";
+  try {
+    await triggers.syncMyDoubleSessionToTimeLeft.run(
+      change(null, eveningSession), { params: { uid: "owner-uid", sessionId: "s1" } },
+    );
+  } finally {
+    delete process.env.TIME_LEFT_INTEGRATION_ID;
+  }
+  assert.equal(lifeEventCalls()[0].body.integrationId, "integration-9");
 });

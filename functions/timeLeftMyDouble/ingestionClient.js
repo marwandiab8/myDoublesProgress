@@ -91,7 +91,48 @@ async function sendTimeLeftMyDoubleItemsBatch(items, options = {}) {
   }
 }
 
+// Sends the session's canonical life event to Time Left's life-event API (see mapSessionToLifeEvent).
+// Never throws unless asked to: the card is what matters most, so a failure here is logged and the caller
+// carries on. A 409 means Time Left already holds a life event for this session and never overwrites one,
+// which is expected for a session that was sent before, so it isn't a warning.
+async function sendTimeLeftMyDoubleLifeEvent(event, options = {}) {
+  const config = readConfig();
+  if (!config.lifeEventEndpoint) return { ok: false, skipped: true };
+  try {
+    const missing = [];
+    if (!config.calendarId) missing.push("TIME_LEFT_CALENDAR_ID");
+    if (!config.connectionId) missing.push("TIME_LEFT_CONNECTION_ID");
+    if (!config.token) missing.push("TIME_LEFT_INGESTION_TOKEN");
+    if (missing.length) {
+      const error = new Error(`MyDoubleProgress Time Left life events are not configured: ${missing.join(", ")}`);
+      error.code = "time-left-mydouble-not-configured";
+      throw error;
+    }
+    const body = await postToTimeLeft(config.lifeEventEndpoint, config.token, {
+      calendarId: config.calendarId,
+      connectionId: config.connectionId,
+      integrationId: config.integrationId || config.connectionId,
+      item: event,
+    });
+    return { ok: true, duplicate: Boolean(body && body.duplicate) };
+  } catch (error) {
+    const conflict = error.status === 409;
+    logger[conflict ? "info" : "warn"](
+      conflict ? "Time Left already has a life event for this session" : "MyDoubleProgress Time Left life event failed",
+      {
+        sourceEventId: event && event.sourceEventId,
+        status: error.status || null,
+        code: error.code || null,
+        message: String(error.message || error).slice(0, 300),
+      },
+    );
+    if (options.throwOnError) throw error;
+    return { ok: false, conflict, error: error.message, status: error.status || null };
+  }
+}
+
 module.exports = {
   sendTimeLeftMyDoubleItem,
+  sendTimeLeftMyDoubleLifeEvent,
   sendTimeLeftMyDoubleItemsBatch,
 };

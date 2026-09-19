@@ -7,10 +7,11 @@ const {
 const {
   sendTimeLeftMyDoubleItem,
   sendTimeLeftMyDoubleItemsBatch,
+  sendTimeLeftMyDoubleLifeEvent,
 } = require("./ingestionClient");
 const { isAuthorized } = require("./auth");
 const { chunkBySize } = require("./batching");
-const { mapSessionToTimeLeft } = require("./mappers");
+const { mapSessionToLifeEvent, mapSessionToTimeLeft } = require("./mappers");
 
 const region = "us-central1";
 const runtimeOptions = {
@@ -23,9 +24,9 @@ function snapshotValue(snapshot) {
   return snapshot && snapshot.exists() ? snapshot.val() || {} : null;
 }
 
-function mapSession(uid, sessionId, session, syncStatus = "active") {
+function mappingOptions(uid, sessionId, syncStatus = "active") {
   const config = readConfig();
-  return mapSessionToTimeLeft(session || {}, {
+  return {
     appBaseUrl: config.appBaseUrl,
     sourceDocumentPath: `users/${uid}/sessions/${sessionId}`,
     sourceFirebaseProjectId: config.sourceFirebaseProjectId,
@@ -34,7 +35,11 @@ function mapSession(uid, sessionId, session, syncStatus = "active") {
     timeZone: config.timeZone,
     uid,
     sessionId,
-  });
+  };
+}
+
+function mapSession(uid, sessionId, session, syncStatus = "active") {
+  return mapSessionToTimeLeft(session || {}, mappingOptions(uid, sessionId, syncStatus));
 }
 
 function assertBackfillAuth(req) {
@@ -65,8 +70,19 @@ exports.syncMyDoubleSessionToTimeLeft = functions
     if (!source) return null;
 
     const item = mapSession(uid, sessionId, source, after ? "active" : "deletedFromSource");
+
+    // A saved session's life event goes first. It carries the duration the Activity dashboard needs, and
+    // once it exists the card endpoint's own (bare) copy of it is refused as a duplicate instead of being
+    // created, so the dashboard gets one entry, the good one. A failure here never stops the card.
+    let lifeEvent = null;
+    if (after) {
+      const event = mapSessionToLifeEvent(after, mappingOptions(uid, sessionId));
+      if (event) lifeEvent = await sendTimeLeftMyDoubleLifeEvent(event);
+    }
+
     const result = await sendTimeLeftMyDoubleItem(item);
     functions.logger.info("MyDoubleProgress Time Left sync attempted", {
+      lifeEvent: lifeEvent ? (lifeEvent.ok ? "sent" : lifeEvent.conflict ? "already-exists" : lifeEvent.skipped ? "disabled" : "failed") : "not-sent",
       ok: !(result && result.ok === false),
       status: result && result.status ? result.status : null,
       dateId: item.dateId || null,

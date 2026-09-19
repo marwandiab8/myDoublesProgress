@@ -141,7 +141,8 @@ function perDoubleRows(perDouble) {
   });
 }
 
-function mapSessionToTimeLeft(session, options = {}) {
+// Everything both Time Left records are built from, computed once so the card and the life event agree.
+function sessionFacts(session, options = {}) {
   const sessionId = text(options.sessionId || "", 140);
   const startedAtMs = Number(session.startedAtMs || session.meta?.startedAtMs || 0);
   const endedAtMs = Number(session.endedAtMs || 0);
@@ -150,29 +151,67 @@ function mapSessionToTimeLeft(session, options = {}) {
   // don't have it, so fall back to converting the timestamp.
   const localDate = LOCAL_DATE_PATTERN.test(String(session.localDate || "")) ? session.localDate : "";
   const dateId = localDate || dateIdFromMs(startedAtMs || endedAtMs, options.timeZone);
-  const stats = summarizeDoubles(session.perDouble || session.doubles || {});
-  const hardest = hardestDoubles(session.perDouble || session.doubles || {});
-  const stayedOn = stayedOnDoubles(session.perDouble || session.doubles || {});
+  const perDouble = session.perDouble || session.doubles || {};
+  const stats = summarizeDoubles(perDouble);
+  const hardest = hardestDoubles(perDouble);
+  const stayedOn = stayedOnDoubles(perDouble);
   const duration = activeMs ? formatDuration(activeMs) : "";
   // Time Left's Activity dashboard shows only a row's title, start and duration (never the summary or
   // description), so the darts total goes in the title to be visible there.
   const dartsInTitle = stats.darts > 0 ? ` · ${count(stats.darts, "dart")}` : "";
-  const title = `${dateId ? `Doubles practice - ${dateId}` : "Doubles practice"}${dartsInTitle}`;
-  const sourceDocumentPath = options.sourceDocumentPath || `users/${options.uid || ""}/sessions/${sessionId}`;
-
-  return compactObject({
-    dateId: dateId || undefined,
-    sourceApp: "MyDoubleProgress",
-    category: "progressRecord",
-    title,
+  return {
+    sessionId, startedAtMs, endedAtMs, activeMs, dateId, perDouble, stats, hardest, stayedOn, duration,
+    title: `${dateId ? `Doubles practice - ${dateId}` : "Doubles practice"}${dartsInTitle}`,
     summary: `${stats.completed}/21 doubles completed, ${count(stats.darts, "dart")} in ${count(stats.attempts, "attempt")}${duration ? `, ${duration}` : ""}.`,
     description: describeSession(stats, hardest, stayedOn),
+    dartsPerDouble: stats.completed > 0 ? Math.round((stats.darts / stats.completed) * 10) / 10 : null,
+    sourceDocumentPath: options.sourceDocumentPath || `users/${options.uid || ""}/sessions/${sessionId}`,
+  };
+}
+
+function sessionMetadata(facts, options = {}) {
+  const { stats } = facts;
+  return compactObject({
+    uid: options.uid || null,
+    sessionId: facts.sessionId,
+    startedAtMs: facts.startedAtMs || null,
+    endedAtMs: facts.endedAtMs || null,
+    activeMs: facts.activeMs || null,
+    duration: facts.duration,
+    attempts: stats.attempts,
+    darts: stats.darts,
+    dartsPerDouble: facts.dartsPerDouble,
+    mostDarts: facts.hardest,
+    extraDarts: stats.extraDarts,
+    stayedOn: facts.stayedOn,
+    completed: stats.completed,
+    hitOnOne: stats.hitOnOne,
+    hitOnTwo: stats.hitOnTwo,
+    hitOnThree: stats.hitOnThree,
+    missed: stats.missed,
+    perDouble: perDoubleRows(facts.perDouble),
+    source: "MyDoubleProgress",
+  });
+}
+
+// The card shown in Time Left's day view.
+function mapSessionToTimeLeft(session, options = {}) {
+  const facts = sessionFacts(session, options);
+  const { startedAtMs, endedAtMs } = facts;
+
+  return compactObject({
+    dateId: facts.dateId || undefined,
+    sourceApp: "MyDoubleProgress",
+    category: "progressRecord",
+    title: facts.title,
+    summary: facts.summary,
+    description: facts.description,
     sourceFirebaseProjectId: options.sourceFirebaseProjectId || "mydoublesprogress",
     sourceProjectName: "MyDoubleProgress",
     sourceProjectId: options.sourceProjectId || "mydoublesprogress",
     sourceCollection: "sessions",
-    sourceDocumentId: sessionId,
-    sourceDocumentPath,
+    sourceDocumentId: facts.sessionId,
+    sourceDocumentPath: facts.sourceDocumentPath,
     sourceStoragePath: null,
     sourceUrl: options.appBaseUrl ? `${options.appBaseUrl}/#history` : "",
     fileUrl: null,
@@ -185,32 +224,61 @@ function mapSessionToTimeLeft(session, options = {}) {
     capturedAt: isoFromMs(startedAtMs || endedAtMs),
     visibility: "ownerOnly",
     syncStatus: options.syncStatus || "active",
-    metadata: compactObject({
-      uid: options.uid || null,
-      sessionId,
-      startedAtMs: startedAtMs || null,
-      endedAtMs: endedAtMs || null,
-      activeMs: activeMs || null,
-      duration,
-      attempts: stats.attempts,
+    metadata: sessionMetadata(facts, options),
+  });
+}
+
+// The life event Time Left's Activity dashboard is built from. The card endpoint makes its own life event
+// but always leaves the duration empty, so a session sent only that way shows as a bare title. Sending
+// this one through the life-event API first gives the dashboard a timed "Darts" session instead.
+//
+// sourceEventId is the same string the card endpoint uses for its life event, so both share one
+// idempotency key: the card's bare copy is then refused as a conflict (the card itself is still saved)
+// rather than adding a second entry. Time Left never overwrites a life event once written, so this only
+// works for a session's first send.
+function mapSessionToLifeEvent(session, options = {}) {
+  const facts = sessionFacts(session, options);
+  const startAt = isoFromMs(facts.startedAtMs || facts.endedAtMs);
+  if (!startAt) return null;
+  const { stats } = facts;
+
+  return compactObject({
+    schemaVersion: 1,
+    sourceApp: "MyDoubleProgress",
+    sourceFirebaseProjectId: options.sourceFirebaseProjectId || "mydoublesprogress",
+    sourceProjectId: options.sourceProjectId || "mydoublesprogress",
+    sourceRecordId: facts.sourceDocumentPath,
+    sourceEventId: facts.sourceDocumentPath,
+    eventType: "darts_practice",
+    eventClass: "completed_activity",
+    activityFamily: "darts",
+    categoryId: "darts",
+    title: facts.title,
+    occurredAt: startAt,
+    startAt,
+    // Active time only (pauses excluded); the dashboard ends the interval at startAt + duration.
+    durationSeconds: facts.activeMs > 0 ? Math.round(facts.activeMs / 1000) : undefined,
+    timezone: options.timeZone || undefined,
+    metrics: compactObject({
       darts: stats.darts,
-      dartsPerDouble: stats.completed > 0 ? Math.round((stats.darts / stats.completed) * 10) / 10 : null,
-      mostDarts: hardest,
       extraDarts: stats.extraDarts,
-      stayedOn,
-      completed: stats.completed,
-      hitOnOne: stats.hitOnOne,
-      hitOnTwo: stats.hitOnTwo,
-      hitOnThree: stats.hitOnThree,
-      missed: stats.missed,
-      perDouble: perDoubleRows(session.perDouble || session.doubles || {}),
-      source: "MyDoubleProgress",
+      attempts: stats.attempts,
+      doublesCompleted: stats.completed,
+      dartsPerDouble: facts.dartsPerDouble === null ? undefined : facts.dartsPerDouble,
     }),
+    metadata: {
+      ...sessionMetadata(facts, options),
+      // The dashboard shows metadata.note as a row's description when there is one.
+      note: `${facts.summary} ${facts.description}`.trim(),
+      summary: facts.summary,
+    },
+    privacyLevel: "ownerOnly",
   });
 }
 
 module.exports = {
   dateIdFromMs,
+  mapSessionToLifeEvent,
   mapSessionToTimeLeft,
   summarizeDoubles,
 };

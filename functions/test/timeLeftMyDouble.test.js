@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const {
   dateIdFromMs,
+  mapSessionToLifeEvent,
   mapSessionToTimeLeft,
   summarizeDoubles,
 } = require("../timeLeftMyDouble/mappers");
@@ -177,4 +178,62 @@ test("the title carries the darts total, since that is all the Activity dashboar
 
   const empty = mapSessionToTimeLeft({ startedAtMs: started, perDouble: {} }, { uid: "u1", sessionId: "s1" });
   assert.equal(empty.title, "Doubles practice - 2028-07-25", "no darts, no suffix");
+});
+
+// ---- life event for the Activity dashboard ----
+
+const lifeSession = {
+  startedAtMs: Date.UTC(2028, 6, 26, 0, 30, 0),
+  endedAtMs: Date.UTC(2028, 6, 26, 1, 5, 0), // wall clock includes 10 minutes paused
+  activeMs: 1500000, // 25 minutes of actual practice
+  localDate: "2028-07-25",
+  perDouble: {
+    D1: { attempts: 1, completed: true, hitDart: 1 },
+    D7: { attempts: 3, completed: true, hitDart: 1, extraDarts: 4 }, // hit on the 7th dart
+  },
+};
+const lifeOptions = { uid: "u1", sessionId: "s1", timeZone: "America/Toronto" };
+
+test("the life event is a timed darts session: active-time duration, start, family, class", () => {
+  const event = mapSessionToLifeEvent(lifeSession, lifeOptions);
+  assert.equal(event.schemaVersion, 1);
+  assert.equal(event.sourceApp, "MyDoubleProgress");
+  assert.equal(event.eventType, "darts_practice");
+  assert.equal(event.eventClass, "completed_activity");
+  assert.equal(event.activityFamily, "darts");
+  assert.equal(event.categoryId, "darts");
+  assert.equal(event.startAt, "2028-07-26T00:30:00.000Z");
+  assert.equal(event.occurredAt, event.startAt);
+  assert.equal(event.durationSeconds, 1500, "active time, not the wall-clock span");
+  assert.equal(event.endAt, undefined, "no endAt, so it can't disagree with the duration");
+  assert.equal(event.timezone, "America/Toronto");
+  assert.equal(event.privacyLevel, "ownerOnly");
+});
+
+test("the life event shares the card's title and its source key", () => {
+  const event = mapSessionToLifeEvent(lifeSession, lifeOptions);
+  const card = mapSessionToTimeLeft(lifeSession, lifeOptions);
+  assert.equal(event.title, card.title);
+  assert.equal(event.title, "Doubles practice - 2028-07-25 · 8 darts");
+  assert.equal(event.sourceEventId, card.sourceDocumentPath, "same idempotency identity as the card's own life event");
+  assert.equal(event.sourceRecordId, card.sourceDocumentPath);
+  assert.equal(event.sourceEventId, "users/u1/sessions/s1");
+});
+
+test("the life event carries metrics, and the summary as the note the dashboard can show", () => {
+  const event = mapSessionToLifeEvent(lifeSession, lifeOptions);
+  assert.deepEqual(event.metrics, { darts: 8, extraDarts: 4, attempts: 4, doublesCompleted: 2, dartsPerDouble: 4 });
+  assert.match(event.metadata.note, /^2\/21 doubles completed, 8 darts in 4 attempts, 25m 0s\./);
+  assert.match(event.metadata.note, /Stayed on D7 \(\+4\)/);
+  assert.equal(event.metadata.summary, "2/21 doubles completed, 8 darts in 4 attempts, 25m 0s.");
+  assert.equal(event.metadata.perDouble.length, 21);
+  assert.equal(event.metadata.extraDarts, 4);
+});
+
+test("no start time means no life event; no active time means no duration", () => {
+  assert.equal(mapSessionToLifeEvent({ perDouble: {} }, lifeOptions), null);
+  const noDuration = mapSessionToLifeEvent({ ...lifeSession, activeMs: 0 }, lifeOptions);
+  assert.equal("durationSeconds" in noDuration, false);
+  const noTimezone = mapSessionToLifeEvent(lifeSession, { uid: "u1", sessionId: "s1" });
+  assert.equal("timezone" in noTimezone, false);
 });
