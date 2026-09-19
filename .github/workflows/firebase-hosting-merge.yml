@@ -37,6 +37,16 @@ jobs:
           test -d public || (echo "Missing public/ directory" && exit 1)
           echo "firebase.json + public/ OK"
 
+      # A key pasted from a rendered view (instead of the downloaded .json file) loses its braces and
+      # colons, and the deploy then fails with a misleading "have you run firebase login?" error.
+      - name: Check service account secret is valid key JSON
+        env:
+          SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_MYDOUBLESPROGRESS }}
+        run: |
+          printf '%s' "$SERVICE_ACCOUNT" \
+            | jq -e '.type == "service_account" and .project_id == "mydoublesprogress"' >/dev/null 2>&1 \
+            || { echo "::error::FIREBASE_SERVICE_ACCOUNT_MYDOUBLESPROGRESS is not a valid service account key JSON for mydoublesprogress. Re-create it as described at the top of this file."; exit 1; }
+
       - uses: FirebaseExtended/action-hosting-deploy@v0.10.0
         with:
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_MYDOUBLESPROGRESS }}
