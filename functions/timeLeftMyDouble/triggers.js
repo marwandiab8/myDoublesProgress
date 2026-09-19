@@ -1,5 +1,5 @@
 const functions = require("firebase-functions/v1");
-const admin = require("firebase-admin");
+const { getDatabase } = require("firebase-admin/database");
 const {
   TIME_LEFT_INGESTION_TOKEN,
   readConfig,
@@ -101,7 +101,7 @@ exports.backfillMyDoubleSessionsToTimeLeft = functions
       }
 
       const limit = Math.max(1, Math.min(1000, Number(req.query.limit || req.body?.limit || 500) || 500));
-      const snap = await admin.database().ref(`users/${config.ownerUid}/sessions`).limitToLast(limit).once("value");
+      const snap = await getDatabase().ref(`users/${config.ownerUid}/sessions`).limitToLast(limit).once("value");
       const sessions = snap.val() || {};
       const items = Object.entries(sessions).map(([sessionId, session]) => mapSession(config.ownerUid, sessionId, session, "active"));
 

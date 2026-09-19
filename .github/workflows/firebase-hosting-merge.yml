@@ -26,7 +26,8 @@ permissions:
   contents: read
 
 jobs:
-  # Nothing is deployed unless these pass. They use only Node built-ins, so there is nothing to install.
+  # Nothing is deployed unless these pass. The page tests use only Node built-ins; the Cloud Functions
+  # tests exercise the real firebase-functions/firebase-admin, so their dependencies are installed.
   test:
     # Pinned: ubuntu-latest moves to Ubuntu 26 on 2026-10-19. Bump this deliberately.
     runs-on: ubuntu-24.04
@@ -43,6 +44,7 @@ jobs:
       - name: Cloud Functions tests and syntax check
         working-directory: functions
         run: |
+          npm ci --no-audit --no-fund
           npm test
           npm run lint
 
