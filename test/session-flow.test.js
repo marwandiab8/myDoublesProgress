@@ -14,7 +14,7 @@ const pageScript = html
 const SDK_NAMES = [
   "initializeApp", "getAuth", "GoogleAuthProvider", "signInWithPopup", "signInWithRedirect",
   "getRedirectResult", "onAuthStateChanged", "signOut", "getDatabase", "ref", "onValue",
-  "runTransaction", "push", "set", "remove", "serverTimestamp", "query", "limitToLast",
+  "runTransaction", "push", "set", "remove", "get", "update", "serverTimestamp", "query", "limitToLast",
   "orderByChild", "startAt",
 ];
 
@@ -50,7 +50,8 @@ class FakeDb {
     this.clock = clock;
     this.listeners = new Set();
     this.keyCounter = 0;
-    this.failNext = { set: 0, remove: 0 };
+    this.failNext = { set: 0, remove: 0, get: 0 };
+    this.txPaths = []; // every path a transaction ran on
     this.interfere = null; // runs once between a transaction's read and its commit
   }
 
@@ -90,6 +91,7 @@ class FakeDb {
   }
 
   runTransaction(p, mutator) {
+    this.txPaths.push(p);
     for (let attempt = 0; attempt < 5; attempt++) {
       const before = this.get(p);
       const result = mutator(clone(before));
@@ -169,6 +171,16 @@ function boot(initial) {
       }
       db.write(r.path, value);
     },
+    get: async (r) => {
+      if (db.failNext.get > 0) {
+        db.failNext.get--;
+        throw Object.assign(new Error("network down"), { code: "network-error" });
+      }
+      return db.snapshot(r.path);
+    },
+    update: async (r, values) => {
+      for (const [key, value] of Object.entries(values)) db.write(`${r.path}/${key}`, value);
+    },
     remove: async (r) => {
       if (db.failNext.remove > 0) {
         db.failNext.remove--;
@@ -196,7 +208,9 @@ function boot(initial) {
   return {
     db, alerts, confirms, clock, el,
     setConfirm(answer) { state.confirmAnswer = answer; },
-    user: () => db.get("users/u1") || {},
+    // What the page treats as the user's data: state (activeSession, lifetime) plus the sessions history.
+    user: () => ({ ...(db.get("users/u1/state") || {}), sessions: db.get("users/u1/sessions") ?? undefined }),
+    raw: () => db.get("users/u1") || {},
     errorText: () => el("errorBox").textContent,
     // The page re-renders every 250ms; run that tick so button states reflect the latest change.
     renderTick() { state.ticker(); },
@@ -271,7 +285,7 @@ test("a finished round left behind by an interrupted save is saved on the next l
   app.db.failNext.set = 1;
   await app.throwHit(1);
 
-  const reloaded = boot({ users: { u1: app.user() } });
+  const reloaded = boot({ users: { u1: app.raw() } });
   await reloaded.signIn();
 
   const user = reloaded.user();
@@ -351,7 +365,7 @@ test("if removing the history row fails, finishing again overwrites that same ro
 test("undo is refused when the double was changed elsewhere since", async () => {
   const app = await startedApp();
   await app.throwHit(1);
-  app.db.write("users/u1/activeSession/doubles/D1/attempts", 5); // e.g. a throw logged on another device
+  app.db.write("users/u1/state/activeSession/doubles/D1/attempts", 5); // e.g. a throw logged on another device
 
   await app.click("btnUndo");
 
@@ -362,7 +376,7 @@ test("undo is refused when the double was changed elsewhere since", async () => 
 
 test("a throw retried by a contended transaction is counted, and undone, exactly once", async () => {
   const app = await startedApp();
-  app.db.interfere = () => app.db.write("users/u1/lifetime/doubles/D20/attempts", 7);
+  app.db.interfere = () => app.db.write("users/u1/state/lifetime/doubles/D20/attempts", 7);
 
   await app.throwHit(1);
   assert.equal(app.user().lifetime.doubles.D1.attempts, 1);
@@ -389,4 +403,77 @@ test("Start new session asks first when throws are logged, and only then discard
   await app.click("btnStartNew");
   assert.notEqual(app.user().activeSession.meta.startedAtMs, startedAtMs);
   assert.equal(app.user().activeSession.doubles.D1.attempts, 0);
+});
+
+test("throws and listeners stay off the sessions history", async () => {
+  const app = await startedApp();
+  await app.throwHit(2);
+  await app.throwHit(1, "btnMiss");
+  await app.click("btnUndo");
+
+  assert.ok(app.db.txPaths.length > 0);
+  assert.deepEqual([...new Set(app.db.txPaths)], ["users/u1/state"]);
+  const listened = [...app.db.listeners].map((l) => l.path);
+  assert.ok(listened.includes("users/u1/state"));
+  assert.ok(!listened.includes("users/u1"), "nothing may listen on the whole user node");
+});
+
+test("a new user can start straight away and nothing is written until they act", async () => {
+  const app = boot();
+  await app.signIn();
+  app.renderTick();
+  assert.equal(app.el("btnStartNew").disabled, false);
+  assert.deepEqual(app.raw(), {});
+});
+
+const legacyRound = (startedAtMs) => ({
+  meta: { startedAtMs, sessionKey: "-Kold" },
+  timer: { isPaused: false, pauseStartedAtMs: null, activeMsAccum: 0, lastResumedAtMs: startedAtMs },
+  flow: { cursorIndex: 0 },
+  doubles: { D1: { attempts: 0, completed: false } },
+});
+
+test("data from before the state split is moved over once, and the round carries on", async () => {
+  const startedAtMs = Date.UTC(2028, 6, 26, 14, 0, 0);
+  const app = boot({ users: { u1: {
+    lifetime: { doubles: { D1: { attempts: 4, hits: 2, hits1: 2, hits2: 0, hits3: 0 } } },
+    activeSession: legacyRound(startedAtMs),
+    sessions: { "-Kprev": { startedAtMs: 1, activeMs: 5, perDouble: {} } },
+  } } });
+  await app.signIn();
+
+  const raw = app.raw();
+  assert.equal(raw.state.lifetime.doubles.D1.attempts, 4);
+  assert.equal(raw.state.activeSession.meta.startedAtMs, startedAtMs);
+  assert.equal(raw.lifetime, undefined, "old copy removed after the move");
+  assert.equal(raw.activeSession, undefined, "old copy removed after the move");
+  assert.deepEqual(Object.keys(raw.sessions), ["-Kprev"], "history untouched");
+
+  await app.throwHit(1);
+  assert.equal(app.user().activeSession.doubles.D1.completed, true);
+  assert.equal(app.user().lifetime.doubles.D1.attempts, 5);
+});
+
+test("an existing state node is never overwritten by leftover old data", async () => {
+  const app = boot({ users: { u1: {
+    state: { lifetime: { doubles: { D1: { attempts: 10, hits: 5, hits1: 5, hits2: 0, hits3: 0 } } } },
+    lifetime: { doubles: { D1: { attempts: 1, hits: 1, hits1: 1, hits2: 0, hits3: 0 } } },
+  } } });
+  await app.signIn();
+
+  assert.equal(app.raw().state.lifetime.doubles.D1.attempts, 10);
+  assert.equal(app.raw().lifetime.doubles.D1.attempts, 1, "leftovers are left alone, not deleted");
+});
+
+test("if the move can't run, nothing is enabled and the old data is untouched", async () => {
+  const oldLifetime = { doubles: { D1: { attempts: 4, hits: 2, hits1: 2, hits2: 0, hits3: 0 } } };
+  const app = boot({ users: { u1: { lifetime: oldLifetime } } });
+  app.db.failNext.get = 1;
+  await app.signIn();
+  app.renderTick();
+
+  assert.match(app.errorText(), /network-error/);
+  assert.equal(app.el("btnStartNew").disabled, true, "must not let a throw create a fresh state");
+  assert.equal(app.raw().state, undefined);
+  assert.equal(app.raw().lifetime.doubles.D1.attempts, 4);
 });

@@ -371,14 +371,16 @@
       onAuthStateChanged, signOut
     } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
     import {
-      getDatabase, ref, onValue, runTransaction, push, set, remove, serverTimestamp,
+      getDatabase, ref, onValue, get, update, runTransaction, push, set, remove, serverTimestamp,
       query, limitToLast, orderByChild, startAt
     } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
 
     // Firebase config (exact from your console)
     const firebaseConfig = {
       apiKey: "AIzaSyD5r9x0-2G2I7s5-dkRe1xI3_wfEyRsiyU",
-      authDomain: "mydoublesprogress.firebaseapp.com",
+      // Must match the domain the app is served from: browsers that partition third-party storage
+      // break sign-in redirects when this points at a different site (firebaseapp.com).
+      authDomain: "mydoublesprogress.web.app",
       databaseURL: "https://mydoublesprogress-default-rtdb.firebaseio.com",
       projectId: "mydoublesprogress",
       storageBucket: "mydoublesprogress.firebasestorage.app",
@@ -386,7 +388,7 @@
       appId: "1:518662869581:web:672c48cf33a27772d54204"
     };
 
-    const REVISION = "rev-2026-09-18-v15";
+    const REVISION = "rev-2026-09-18-v16";
 
     const TARGETS = [
       ...Array.from({length:20}, (_,i)=>({ key:`D${i+1}`, label:`D${i+1}` })),
@@ -399,8 +401,8 @@
     const provider = new GoogleAuthProvider();
     provider.setCustomParameters({ prompt: "select_account" });
 
-    // If we came back from a redirect sign-in flow, finalize it (best-effort)
-    getRedirectResult(auth).catch(()=>{});
+    // If we came back from a redirect sign-in flow, finalize it
+    getRedirectResult(auth).catch((err)=> showError(err));
 
 
     // UI
@@ -451,6 +453,7 @@ let uid = null;
     // startedAtMs of rounds being written to history right now (blocks duplicate saves and Undo).
     const finalizing = new Set();
     let recoveryChecked = false;
+    let authEpoch = 0; // bumped on every auth change so a slow migration can't act for a stale user
 
     // localStorage can throw when site data is blocked; the app must still load without it.
     function storageGet(key){
@@ -802,7 +805,7 @@ function render(){
       const since = model?.since || null;
 
       enable(btnLogout, signedIn);
-      enable(btnStartNew, signedIn);
+      enable(btnStartNew, signedIn && !!life);
       enable(btnPauseResume, signedIn && !!sess && !isFinished(sess));
       const canLog = signedIn && !!sess && !sess.timer?.isPaused && !isFinished(sess);
       enable(btnHit1, canLog);
@@ -981,10 +984,13 @@ function render(){
       if (document.visibilityState === "visible" && uid) render();
     });
 
+    // activeSession and lifetime live under users/{uid}/state, apart from the growing sessions
+    // history, so per-throw transactions and listeners never load or rewrite that history.
+    const stateRef = ()=> ref(db, `users/${uid}/state`);
+
     async function tx(mutator){
       if (!uid) return;
-      const rootRef = ref(db, `users/${uid}`);
-      await runTransaction(rootRef, (current)=>{
+      await runTransaction(stateRef(), (current)=>{
         const u = current || {};
         ensureLifetime(u);
         mutator(u);
@@ -1035,8 +1041,7 @@ function render(){
       if (!uid) return;
       let capturedUndo = null;
 
-      const rootRef = ref(db, `users/${uid}`);
-      const result = await runTransaction(rootRef, (current)=>{
+      const result = await runTransaction(stateRef(), (current)=>{
         capturedUndo = null;
         const u = current || {};
         ensureLifetime(u);
@@ -1147,7 +1152,7 @@ function render(){
 
       try{
         let denied = null;
-        const undoResult = await runTransaction(ref(db, `users/${uid}`), (current)=>{
+        const undoResult = await runTransaction(stateRef(), (current)=>{
           denied = null;
           const u = current || {};
           ensureLifetime(u);
@@ -1258,6 +1263,52 @@ function render(){
           });
         }
 
+// One-time move of users/{uid}/{activeSession,lifetime} to users/{uid}/state. The state node is only
+    // created if it doesn't exist yet, and the old copies are only removed after that write commits, so
+    // a failure or a second device racing this can't lose or overwrite data.
+    async function migrateLegacyState(owner){
+      const base = `users/${owner}`;
+      const [stateSnap, lifeSnap, activeSnap] = await Promise.all([
+        get(ref(db, `${base}/state`)),
+        get(ref(db, `${base}/lifetime`)),
+        get(ref(db, `${base}/activeSession`)),
+      ]);
+      if (stateSnap.exists() || (!lifeSnap.exists() && !activeSnap.exists())) return;
+
+      const legacy = {};
+      if (lifeSnap.exists()) legacy.lifetime = lifeSnap.val();
+      if (activeSnap.exists()) legacy.activeSession = activeSnap.val();
+
+      const moved = await runTransaction(ref(db, `${base}/state`), (current)=> current ? undefined : legacy);
+      if (moved.committed){
+        await update(ref(db, base), { lifetime: null, activeSession: null });
+      }
+    }
+
+    function subscribeState(){
+      if (unsubUser){ unsubUser(); unsubUser = null; }
+      const offUser = onValue(stateRef(), (snap)=>{
+        const v = snap.val() || {};
+        if (!v.lifetime) v.lifetime = defaultLifetime();
+        ensureLifetime(v);
+        if (v.activeSession) v.activeSession = ensureSession(v.activeSession);
+
+        model.activeSession = v.activeSession || null;
+        model.lifetime = v.lifetime;
+
+        // A finished round still sitting in activeSession means an earlier save failed or was
+        // interrupted (a normal finish is cleared right away). Finish saving it, once per sign-in.
+        if (!recoveryChecked){
+          recoveryChecked = true;
+          if (v.activeSession && isFinished(v.activeSession)){
+            finalizeSession(v.activeSession).catch(showError);
+          }
+        }
+        render();
+      }, (err)=> showError(err));
+      unsubUser = ()=> offUser();
+    }
+
 // Auth wiring
     btnLoginPopup.addEventListener("click", async ()=>{
       try{
@@ -1334,28 +1385,12 @@ function render(){
         uid = user.uid;
         setAuthStatus(`Signed in: ${user.email || user.uid}`, "ok");
 
-        // Subscribe to user (lifetime + active session)
-        const userRef = ref(db, `users/${uid}`);
-        const offUser = onValue(userRef, (snap)=>{
-          const v = snap.val() || {};
-          if (!v.lifetime) v.lifetime = defaultLifetime();
-          ensureLifetime(v);
-          if (v.activeSession) v.activeSession = ensureSession(v.activeSession);
-
-          model.activeSession = v.activeSession || null;
-          model.lifetime = v.lifetime;
-
-          // A finished round still sitting in activeSession means an earlier save failed or was
-          // interrupted (a normal finish is cleared right away). Finish saving it, once per sign-in.
-          if (!recoveryChecked){
-            recoveryChecked = true;
-            if (v.activeSession && isFinished(v.activeSession)){
-              finalizeSession(v.activeSession).catch(showError);
-            }
-          }
-          render();
-        }, (err)=> showError(err));
-        unsubUser = ()=> offUser();
+        // Load lifetime + active session, after moving any pre-"state" data into place. Until that
+        // finishes nothing is enabled, so no throw can create a fresh state over the old data.
+        const epoch = ++authEpoch;
+        migrateLegacyState(uid).then(()=>{
+          if (epoch === authEpoch) subscribeState(); // ignore if signed out / switched meanwhile
+        }).catch((err)=> showError(err));
 
         // Subscribe to session history (last 15)
         const sessionsRef = ref(db, `users/${uid}/sessions`);
@@ -1372,13 +1407,13 @@ function render(){
         unsubSessions = ()=> offSessions();
 
         enable(btnLogout, true);
-        enable(btnStartNew, true);
         startTicker();
         // If a "From" date is selected, load stats since that date
         subscribeSinceStats();
         subscribeHeatMap();
       } else {
         uid = null;
+        authEpoch++;
         setAuthStatus("Not signed in", "warn");
 
         enable(btnLogout, false);
