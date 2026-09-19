@@ -521,3 +521,159 @@ test("signing out clears the board, and signing back in shows it again despite t
   app.renderTick();
   assert.match(app.el("boardBody").innerHTML, /D1/, "rows come back, not a stale skipped write");
 });
+
+// ---- "Hit a later double": one entry for a run of misses followed by a hit ----
+
+// Picks the double and total darts in the two dropdowns and presses Log, as a player would.
+async function logLater(app, doubleKey, totalDarts) {
+  app.el("laterDouble").value = doubleKey;
+  app.el("laterDarts").value = String(totalDarts);
+  app.renderTick();
+  await app.click("btnLater");
+}
+
+test("hitting D3 after 9 darts records D1 and D2 as misses and D3 as hit on dart 3", async () => {
+  const app = await startedApp();
+  await logLater(app, "D3", 9);
+
+  const { activeSession: session, lifetime } = app.user();
+  for (const key of ["D1", "D2"]) {
+    assert.equal(session.doubles[key].attempts, 1, `${key} gets one missed visit`);
+    assert.notEqual(session.doubles[key].completed, true);
+    assert.equal(lifetime.doubles[key].attempts, 1);
+    assert.equal(lifetime.doubles[key].hits ?? 0, 0);
+  }
+  assert.equal(session.doubles.D3.attempts, 1);
+  assert.equal(session.doubles.D3.completed, true);
+  assert.equal(session.doubles.D3.hitDart, 3);
+  assert.equal(lifetime.doubles.D3.hits, 1);
+  assert.equal(lifetime.doubles.D3.hits3, 1);
+  assert.equal(session.flow.cursorIndex, 3, "play carries on at D4; D1 and D2 come round again");
+
+  app.renderTick();
+  assert.equal(app.el("progressPill").textContent, "1/21");
+  assert.equal(app.el("dartsPill").textContent, "9 darts");
+});
+
+test("the total decides which dart hit: one skipped double, 4/5/6 darts means dart 1/2/3", async () => {
+  for (const [total, expectedDart] of [[4, 1], [5, 2], [6, 3]]) {
+    const app = await startedApp();
+    await logLater(app, "D2", total);
+    assert.equal(app.user().activeSession.doubles.D2.hitDart, expectedDart, `${total} darts`);
+    assert.equal(app.user().lifetime.doubles.D2[`hits${expectedDart}`], 1);
+  }
+});
+
+test("the darts total keeps adding up across ordinary throws and entries", async () => {
+  const app = await startedApp();
+  await logLater(app, "D3", 9); // 9 darts
+  await app.throwHit(1); // D4 hit on dart 1: +1
+  await app.throwHit(1, "btnMiss"); // D5 missed: +3
+  app.renderTick();
+  assert.equal(app.el("progressPill").textContent, "2/21");
+  assert.equal(app.el("dartsPill").textContent, "13 darts");
+});
+
+test("a total that doesn't add up is refused and changes nothing", async () => {
+  const app = await startedApp();
+  const before = app.user();
+  app.el("laterDouble").value = "D3";
+  app.el("laterDarts").value = "10"; // D1 and D2 took 6 darts, so D3 needs 7, 8 or 9
+  await app.click("btnLater"); // no render in between, so the dropdown's own filtering is bypassed
+
+  assert.match(app.alerts.at(-1), /7, 8 or 9/);
+  assert.deepEqual(app.user(), before);
+});
+
+test("the Log button stays disabled until a double and a valid total are both chosen", async () => {
+  const app = await startedApp();
+  app.renderTick();
+  assert.equal(app.el("btnLater").disabled, true);
+
+  app.el("laterDouble").value = "D3";
+  app.renderTick();
+  assert.equal(app.el("btnLater").disabled, true, "no total yet");
+
+  app.el("laterDarts").value = "8";
+  app.renderTick();
+  assert.equal(app.el("btnLater").disabled, false);
+
+  app.el("laterDarts").value = "12"; // not one of D3's totals
+  app.renderTick();
+  assert.equal(app.el("btnLater").disabled, true);
+  assert.equal(app.el("laterDarts").value, "", "an invalid total is cleared");
+});
+
+test("skipping past DBULL wraps round to the earlier open double", async () => {
+  const app = await startedApp();
+  await app.throwHit(1); // D1 hit
+  await app.throwHit(1, "btnMiss"); // D2 missed, stays open
+  await app.throwHit(18); // D3..D20 hit; now on DBULL, with D2 still open behind it
+
+  await logLater(app, "D2", 5); // DBULL missed (3 darts), then D2 hit on dart 2
+
+  const { activeSession: session } = app.user();
+  assert.equal(session.doubles.DBULL.attempts, 1);
+  assert.notEqual(session.doubles.DBULL.completed, true);
+  assert.equal(session.doubles.D2.attempts, 2, "the earlier miss plus this hit");
+  assert.equal(session.doubles.D2.completed, true);
+  assert.equal(session.doubles.D2.hitDart, 2);
+  app.renderTick();
+  assert.equal(app.el("progressPill").textContent, "20/21");
+  assert.equal(app.el("targetLabel").textContent, "DBULL");
+});
+
+test("undo reverses the whole entry: every skipped double, the hit, the lifetime counts and the darts", async () => {
+  const app = await startedApp();
+  await logLater(app, "D3", 9);
+
+  await app.click("btnUndo");
+
+  const { activeSession: session, lifetime } = app.user();
+  for (const key of ["D1", "D2", "D3"]) {
+    assert.equal(session.doubles[key].attempts ?? 0, 0, `${key} session attempts`);
+    assert.equal(lifetime.doubles[key]?.attempts ?? 0, 0, `${key} lifetime attempts`);
+  }
+  assert.equal(session.doubles.D3.completed ?? false, false);
+  assert.equal(lifetime.doubles.D3?.hits ?? 0, 0);
+  assert.equal(session.flow.cursorIndex, 0);
+  app.renderTick();
+  assert.equal(app.el("dartsPill").textContent, "0 darts");
+});
+
+test("the Hit/Double dropdowns are only rewritten when their options change, not on idle ticks", async () => {
+  const app = await startedApp();
+  app.renderTick();
+  const before = [app.el("laterDouble").writes.innerHTML, app.el("laterDarts").writes.innerHTML];
+
+  for (let i = 0; i < 40; i++) app.renderTick();
+
+  assert.deepEqual([app.el("laterDouble").writes.innerHTML, app.el("laterDarts").writes.innerHTML], before);
+  app.el("laterDouble").value = "D3";
+  app.renderTick();
+  assert.equal(app.el("laterDouble").value, "D3", "the player's choice survives ticks");
+});
+
+test("a finished round is saved with its total darts", async () => {
+  const app = await startedApp();
+  const { sessionKey } = app.user().activeSession.meta;
+  await app.throwHit(21); // every double hit on the first dart
+
+  assert.equal(app.user().sessions[sessionKey].totalDarts, 21);
+});
+
+test("the history shows darts, working them out for sessions saved before they were recorded", async () => {
+  const app = boot({ users: { u1: { sessions: {
+    "-Kold": {
+      startedAtMs: Date.UTC(2028, 0, 1), activeMs: 60000,
+      // D1: missed once (3) then hit on dart 2 (2) = 5 darts; D2: missed once = 3 darts
+      perDouble: { D1: { attempts: 2, completed: true, hitDart: 2 }, D2: { attempts: 1, completed: false } },
+    },
+    "-Knew": { startedAtMs: Date.UTC(2028, 0, 2), activeMs: 90000, totalDarts: 57, perDouble: {} },
+  } } } });
+  await app.signIn();
+
+  const html = app.el("historyBody").innerHTML;
+  assert.match(html, /mono">8<\/td>/, "derived: 5 + 3");
+  assert.match(html, /mono">57<\/td>/, "stored total is used as is");
+});

@@ -54,7 +54,10 @@
       display:inline-flex; align-items:center; justify-content:center; gap:10px;
       font-size:20px; padding:18px 16px;
     }
-    .btn-progress{display:flex; justify-content:center; align-items:center; cursor:default; padding:24px 16px;}
+    .btn-progress{display:flex; flex-direction:column; justify-content:center; align-items:center; gap:6px; cursor:default; padding:24px 16px;}
+    .dartsPill{font-size:clamp(20px,2.4vw,30px); font-weight:800; color:#cfe0ff; opacity:.85; line-height:1;}
+    .dartsPill:empty{display:none;}
+    .btn-compact{font-size:20px; padding:14px 22px;}
     #progressPill{font-size:clamp(56px,5.2vw,88px); font-weight:950; display:inline-block;}
     /* Desktop tuning: keep Progress readable from ~8ft but less oversized on wide screens */
     @media (min-width: 980px){
@@ -233,6 +236,7 @@
             <li>If you miss a double, it stays unfinished and will be attempted again next round.</li>
             <li>The app automatically cycles back to the <strong>earliest unfinished double</strong> until everything is closed.</li>
             <li>Timer excludes paused time.</li>
+            <li><strong>Missed a run of doubles, then hit one?</strong> Log it in one go under <em>Hit a later double</em>: pick the double and the total darts. The doubles skipped over are recorded as misses (3 darts each).</li>
             <li><strong>Undo last throw</strong> reverts your most recent hit or miss (including after a finished round removes the saved history row for that save).</li>
           </ul>
         </div>
@@ -261,6 +265,7 @@
         <div class="row" style="margin-top:10px;">
           <button class="btn-blue btn-big btn-progress" id="btnProgress" type="button">
             <span id="progressPill">—</span>
+            <span id="dartsPill" class="dartsPill"></span>
           </button>
         </div>
 
@@ -282,6 +287,20 @@
           <button class="btn-ok disabled" id="btnHit2">✅ Hit on 2</button>
           <button class="btn-ok disabled" id="btnHit3">✅ Hit on 3</button>
           <button class="btn-err disabled" id="btnMiss">❌ Miss (0/3)</button>
+        </div>
+
+        <div class="note" style="margin-top:12px;">
+          <div><strong>Hit a later double</strong></div>
+          <div class="row" style="margin-top:8px; gap:10px;">
+            <label class="pill"><strong>Hit</strong>
+              <select id="laterDouble" class="selectInput" title="The double you hit, further along than the current one"></select>
+            </label>
+            <label class="pill"><strong>Darts</strong>
+              <select id="laterDarts" class="selectInput" title="Total darts thrown since your last hit"></select>
+            </label>
+            <button class="btn-ok btn-compact disabled" id="btnLater" type="button">Log</button>
+          </div>
+          <div class="mini" id="laterHint" style="margin-top:8px;"></div>
         </div>
 
         <div class="row" style="margin-top:12px;">
@@ -352,10 +371,11 @@
             <tr>
               <th>Date</th>
               <th class="right">Duration</th>
+              <th class="right">Darts</th>
             </tr>
           </thead>
           <tbody id="historyBody">
-            <tr><td colspan="2" class="muted">No sessions yet…</td></tr>
+            <tr><td colspan="3" class="muted">No sessions yet…</td></tr>
           </tbody>
         </table>
 </div>
@@ -388,7 +408,7 @@
       appId: "1:518662869581:web:672c48cf33a27772d54204"
     };
 
-    const REVISION = "rev-2026-09-18-v17";
+    const REVISION = "rev-2026-09-18-v18";
 
     const TARGETS = [
       ...Array.from({length:20}, (_,i)=>({ key:`D${i+1}`, label:`D${i+1}` })),
@@ -414,6 +434,11 @@ const elAuthStatus = document.getElementById("authStatus");
     const elTargetLabel = document.getElementById("targetLabel");
     const elTargetHint = document.getElementById("targetHint");
     const elProgressPill = document.getElementById("progressPill");
+    const elDartsPill = document.getElementById("dartsPill");
+    const elLaterDouble = document.getElementById("laterDouble");
+    const elLaterDarts = document.getElementById("laterDarts");
+    const elLaterHint = document.getElementById("laterHint");
+    const btnLater = document.getElementById("btnLater");
         const elBoardBody = document.getElementById("boardBody");
     const elHistoryBody = document.getElementById("historyBody");
 
@@ -448,7 +473,7 @@ let uid = null;
     let unsubHeat = null;
     let model = null; // { activeSession, lifetime, sessions: [] }
     let tick = null;
-    /** @type {null | { startedAtMs:number, key:string, prevDouble:object, prevCursor:number, hitDart:(number|null), attemptsAfter:number, finishingShot:boolean, sessionKey:(string|null), activeMsAtFinish:number, sessionBefore:(object|null) }} */
+    /** @type {null | { startedAtMs:number, visits:Array<{key:string, prevDouble:object, hitDart:(number|null), attemptsAfter:number}>, prevCursor:number, finishingShot:boolean, sessionKey:(string|null), activeMsAtFinish:number, sessionBefore:(object|null) }} */
     let pendingUndo = null;
     // startedAtMs of rounds being written to history right now (blocks duplicate saves and Undo).
     const finalizing = new Set();
@@ -605,17 +630,19 @@ let uid = null;
     function renderHistory(){
       const sessions = model?.sessions || [];
       if (!uid){
-        setHtml(elHistoryBody, '<tr><td colspan="2" class="muted">Sign in to load…</td></tr>');
+        setHtml(elHistoryBody, '<tr><td colspan="3" class="muted">Sign in to load…</td></tr>');
         return;
       }
       if (!sessions.length){
-        setHtml(elHistoryBody, '<tr><td colspan="2" class="muted">No sessions yet…</td></tr>');
+        setHtml(elHistoryBody, '<tr><td colspan="3" class="muted">No sessions yet…</td></tr>');
         return;
       }
       const rows = sessions.map(s=>{
         const date = (typeof s.startedAtMs === "number") ? new Date(s.startedAtMs).toLocaleString() : "—";
         const dur = (typeof s.activeMs === "number") ? fmt(s.activeMs) : "—";
-        return `<tr><td>${date}</td><td class="right mono">${dur}</td></tr>`;
+        // Sessions saved before totalDarts existed still have attempts/hitDart to work it out from.
+        const darts = (typeof s.totalDarts === "number") ? s.totalDarts : (s.perDouble ? sessionDarts(s.perDouble) : null);
+        return `<tr><td>${date}</td><td class="right mono">${dur}</td><td class="right mono">${darts == null ? "—" : darts}</td></tr>`;
       });
       setHtml(elHistoryBody, rows.join(""));
     }
@@ -813,6 +840,38 @@ let uid = null;
       }, (err)=> showError(err));
       unsubSince = ()=> off();
     }
+    // Options for "Hit a later double". render() runs every 250ms, so an option list is only rewritten
+    // when it actually changed; otherwise an open dropdown would close and lose the player's choice.
+    function setOptions(select, html, keep){
+      setHtml(select, html);
+      if (select.value !== keep) select.value = keep; // rewriting the options resets it to the first one
+    }
+
+    function renderLater(sess, canLog){
+      const ahead = canLog ? playOrder(sess).slice(1) : []; // doubles further along than the current one
+      const doubleOptions = '<option value="">Double you hit…</option>' +
+        ahead.map((i, n)=> `<option value="${TARGETS[i].key}">${TARGETS[i].label} (skips ${n + 1})</option>`).join("");
+      const chosen = ahead.some((i)=> TARGETS[i].key === elLaterDouble.value) ? elLaterDouble.value : "";
+      setOptions(elLaterDouble, doubleOptions, chosen);
+
+      const skipped = ahead.findIndex((i)=> TARGETS[i].key === elLaterDouble.value) + 1; // 0 when none picked
+      const totals = skipped ? [1, 2, 3].map((dart)=> 3 * skipped + dart) : [];
+      const dartsOptions = '<option value="">Total darts…</option>' +
+        totals.map((total)=> `<option value="${total}">${total} darts (hit on dart ${total - 3 * skipped})</option>`).join("");
+      setOptions(elLaterDarts, dartsOptions, totals.includes(Number(elLaterDarts.value)) ? elLaterDarts.value : "");
+
+      const total = Number(elLaterDarts.value);
+      const ready = skipped > 0 && totals.includes(total);
+      enable(btnLater, canLog && ready);
+
+      let hint = "Pick the double you hit and the total darts since your last hit. The doubles before it are logged as misses (3 darts each).";
+      if (canLog && ahead.length === 0) hint = "Nothing ahead of the current double yet.";
+      if (canLog && ready){
+        hint = `Logs ${skipped} missed double${skipped === 1 ? "" : "s"} (${3 * skipped} darts), then ${elLaterDouble.value} hit on dart ${total - 3 * skipped}.`;
+      }
+      setText(elLaterHint, hint);
+    }
+
 function render(){
       const signedIn = !!uid;
       const sess = model?.activeSession || null;
@@ -829,12 +888,14 @@ function render(){
       enable(btnMiss, canLog);
       enable(btnUndo, signedIn && !!pendingUndo && finalizing.size === 0);
       enable(btnSaveDone, signedIn && !!sess && isFinished(sess));
+      renderLater(sess, canLog);
 
       // Timer UI
       if (!sess){
         setText(elTimer, "00:00");
         setText(elTimerNote, "No active session");
         setText(elProgressPill, "—");
+        setText(elDartsPill, "");
         setText(elTargetLabel, "—");
         setText(elTargetHint, signedIn ? "Start a new session." : "Sign in to begin.");
         hideUpNext();
@@ -847,6 +908,7 @@ function render(){
 
         const doneCount = Object.values(sess.doubles||{}).filter(d=>d.completed).length;
         setText(elProgressPill, `${doneCount}/${TARGETS.length}`);
+        setText(elDartsPill, dartsLabel(sessionDarts(sess.doubles)));
 
         const curIdx = sess.flow?.cursorIndex ?? 0;
         const idx = nextIndexFrom(sess, curIdx);
@@ -1052,29 +1114,44 @@ function render(){
       });
     }
 
-    async function logResult(type){ // "hit1"|"hit2"|"hit3"|"miss"
-      if (!uid) return;
-      let capturedUndo = null;
+    // The order the open doubles will be played from the current one: forward to DBULL, then back
+    // round to the earliest one still open. Indices into TARGETS.
+    function playOrder(sess){
+      const start = nextIndexFrom(sess, sess.flow?.cursorIndex ?? 0);
+      if (start === -1) return [];
+      const open = (i)=> !sess.doubles?.[TARGETS[i].key]?.completed;
+      const order = [];
+      for (let i = start; i < TARGETS.length; i++) if (open(i)) order.push(i);
+      for (let i = 0; i < start; i++) if (open(i)) order.push(i);
+      return order;
+    }
 
-      const result = await runTransaction(stateRef(), (current)=>{
-        capturedUndo = null;
-        const u = current || {};
-        ensureLifetime(u);
-        if (!u.activeSession) return u;
-        u.activeSession = ensureSession(u.activeSession);
+    // Darts thrown at one double: each missed visit was 3 darts, and the visit that hit it took
+    // `hitDart` darts. Derived from attempts/hitDart, so sessions saved before darts were shown work too.
+    function dartsAt(d){
+      const attempts = d?.attempts || 0;
+      if (!attempts) return 0;
+      return d.completed ? (attempts - 1) * 3 + (d.hitDart || 3) : attempts * 3;
+    }
+    function sessionDarts(doubles){
+      return TARGETS.reduce((sum, t)=> sum + dartsAt(doubles?.[t.key]), 0);
+    }
+    function dartsLabel(n){
+      return `${n} dart${n === 1 ? "" : "s"}`;
+    }
 
-        const sess = u.activeSession;
-        const tmr = sess.timer || {};
-        if (tmr.isPaused) return u;
+    // Records 3-dart visits, in play order, inside a transaction. Each visit is at one double:
+    // hitDart 1-3 if it was hit on that dart, null for a miss. Returns what Undo needs.
+    function applyVisits(u, sess, visits){
+      const sessionBefore = clone(sess);
+      const startedAtMs = sess.meta?.startedAtMs;
+      const prevCursor = sess.flow?.cursorIndex ?? 0;
+      const applied = [];
+      let lastIdx = -1;
 
-        const cur = sess.flow?.cursorIndex ?? 0;
-        const idx = nextIndexFrom(sess, cur);
-        if (idx === -1) return u;
-
-        const key = TARGETS[idx].key;
-        const sessionBefore = clone(sess);
-        const startedAtMs = sess.meta?.startedAtMs;
-
+      for (const visit of visits){
+        const key = visit.key;
+        lastIdx = TARGETS.findIndex((t)=> t.key === key);
         const sd = sess.doubles[key] || { attempts:0, completed:false, hitDart:null, completedAt:null };
         const ld = u.lifetime.doubles[key] || { attempts:0, hits:0, hits1:0, hits2:0, hits3:0 };
         const prevDouble = clone(sd);
@@ -1082,10 +1159,8 @@ function render(){
         sd.attempts = (sd.attempts || 0) + 1;
         ld.attempts = (ld.attempts || 0) + 1;
 
-        let hitDart = null;
-        if (type !== "miss"){
-          const d = type === "hit1" ? 1 : type === "hit2" ? 2 : 3;
-          hitDart = d;
+        const d = visit.hitDart;
+        if (d){
           sd.completed = true;
           sd.hitDart = d;
           sd.completedAt = Date.now();
@@ -1098,54 +1173,84 @@ function render(){
 
         sess.doubles[key] = sd;
         u.lifetime.doubles[key] = ld;
+        applied.push({ key, prevDouble, hitDart: d || null, attemptsAfter: sd.attempts });
+      }
 
-        // advance cursor (auto-rotate)
-        sess.flow.cursorIndex = idx + 1;
+      // advance cursor (auto-rotate)
+      sess.flow.cursorIndex = lastIdx + 1;
 
-        // If we're past the end OR the rest are completed but some earlier are still open,
-        // jump back to the earliest unfinished double automatically.
-        if (sess.flow.cursorIndex >= TARGETS.length) {
+      // If we're past the end OR the rest are completed but some earlier are still open,
+      // jump back to the earliest unfinished double automatically.
+      if (sess.flow.cursorIndex >= TARGETS.length) {
+        const e = earliestUnfinishedIndex(sess);
+        sess.flow.cursorIndex = (e === -1) ? (TARGETS.length - 1) : e;
+      } else {
+        const next = nextIndexFrom(sess, sess.flow.cursorIndex);
+        if (next === -1) {
           const e = earliestUnfinishedIndex(sess);
           sess.flow.cursorIndex = (e === -1) ? (TARGETS.length - 1) : e;
-        } else {
-          const next = nextIndexFrom(sess, sess.flow.cursorIndex);
-          if (next === -1) {
-            const e = earliestUnfinishedIndex(sess);
-            sess.flow.cursorIndex = (e === -1) ? (TARGETS.length - 1) : e;
-          }
         }
+      }
 
-        const finishingShot = isFinished(sess);
+      const finishingShot = isFinished(sess);
 
-        // If finished, freeze timer by pausing and accumulating final segment
-        if (finishingShot){
-          const now = Date.now();
-          const t = sess.timer;
-          if (!t.isPaused){
-            const last = t.lastResumedAtMs ?? sess.meta.startedAtMs ?? now;
-            t.activeMsAccum = (t.activeMsAccum || 0) + Math.max(0, now - last);
-            t.isPaused = true;
-            t.pauseStartedAtMs = now;
-          }
-          // Sessions started before history keys existed still need one to be saved under.
-          if (!sess.meta.sessionKey) sess.meta.sessionKey = newSessionKey();
+      // If finished, freeze timer by pausing and accumulating final segment
+      if (finishingShot){
+        const now = Date.now();
+        const t = sess.timer;
+        if (!t.isPaused){
+          const last = t.lastResumedAtMs ?? sess.meta.startedAtMs ?? now;
+          t.activeMsAccum = (t.activeMsAccum || 0) + Math.max(0, now - last);
+          t.isPaused = true;
+          t.pauseStartedAtMs = now;
         }
+        // Sessions started before history keys existed still need one to be saved under.
+        if (!sess.meta.sessionKey) sess.meta.sessionKey = newSessionKey();
+      }
 
-        // Undo reverses only this throw (not the whole session), so pauses and throws made
-        // elsewhere in the meantime are left alone.
-        capturedUndo = {
-          startedAtMs, key, prevDouble, hitDart, finishingShot,
-          prevCursor: cur,
-          attemptsAfter: sd.attempts,
-          sessionKey: sess.meta.sessionKey || null,
-          activeMsAtFinish: sess.timer.activeMsAccum || 0,
-          // Only needed to rebuild the session if the finished round was already saved and cleared.
-          sessionBefore: finishingShot ? sessionBefore : null
-        };
+      // Undo reverses only these visits (not the whole session), so pauses and throws made
+      // elsewhere in the meantime are left alone.
+      return {
+        startedAtMs, visits: applied, finishingShot, prevCursor,
+        sessionKey: sess.meta.sessionKey || null,
+        activeMsAtFinish: sess.timer.activeMsAccum || 0,
+        // Only needed to rebuild the session if the finished round was already saved and cleared.
+        sessionBefore: finishingShot ? sessionBefore : null
+      };
+    }
+
+    // Runs `plan(session)` inside the transaction. It returns null to do nothing, { error } to refuse
+    // with a message, or { visits } to record. If that finishes the round, it is saved to history.
+    // Resolves true when something was recorded.
+    async function logVisits(plan){
+      if (!uid) return false;
+      let capturedUndo = null;
+      let refusal = null;
+
+      const result = await runTransaction(stateRef(), (current)=>{
+        capturedUndo = null;
+        refusal = null;
+        const u = current || {};
+        ensureLifetime(u);
+        if (!u.activeSession) return u;
+        u.activeSession = ensureSession(u.activeSession);
+
+        const sess = u.activeSession;
+        if (sess.timer?.isPaused) return u;
+
+        const decided = plan(sess);
+        if (!decided) return u;
+        if (decided.error){ refusal = decided.error; return u; }
+
+        capturedUndo = applyVisits(u, sess, decided.visits);
         return u;
       });
 
-      if (!result.committed || !capturedUndo) return;
+      if (refusal){
+        alert(refusal);
+        return false;
+      }
+      if (!result.committed || !capturedUndo) return false;
 
       pendingUndo = capturedUndo;
       if (capturedUndo.finishingShot){
@@ -1154,11 +1259,40 @@ function render(){
           try{
             await finalizeSession(ensureSession(finished), { announce: true });
           }catch(err){
-            // The finished round stays in activeSession, so "Save session" (or a reload) retries.
+            // The finished round stays in activeSession, so "Save session" (or a reload) retries it.
             showError(err);
           }
         }
       }
+      return true;
+    }
+
+    function logResult(type){ // "hit1"|"hit2"|"hit3"|"miss"
+      const hitDart = type === "hit1" ? 1 : type === "hit2" ? 2 : type === "hit3" ? 3 : null;
+      return logVisits((sess)=>{
+        const idx = nextIndexFrom(sess, sess.flow?.cursorIndex ?? 0);
+        return idx === -1 ? null : { visits: [{ key: TARGETS[idx].key, hitDart }] };
+      });
+    }
+
+    // One entry for "missed a run of doubles, then hit this one": every double before it in play
+    // order gets a missed 3-dart visit, and the total darts says which dart hit the target.
+    function logLater(targetKey, totalDarts){
+      return logVisits((sess)=>{
+        const order = playOrder(sess);
+        const skipped = order.findIndex((i)=> TARGETS[i].key === targetKey);
+        if (skipped < 1) return { error: "That double isn't ahead of the current one any more." };
+
+        const hitDart = totalDarts - 3 * skipped;
+        if (!Number.isInteger(hitDart) || hitDart < 1 || hitDart > 3){
+          const base = 3 * skipped;
+          return { error: `The ${skipped} skipped double${skipped === 1 ? "" : "s"} took ${base} darts, so hitting ${targetKey} means a total of ${base + 1}, ${base + 2} or ${base + 3}.` };
+        }
+
+        const visits = order.slice(0, skipped).map((i)=> ({ key: TARGETS[i].key, hitDart: null }));
+        visits.push({ key: targetKey, hitDart });
+        return { visits };
+      });
     }
 
     async function undoLastThrow(){
@@ -1178,8 +1312,8 @@ function render(){
               denied = "Can't undo — a different session is now in progress.";
               return u;
             }
-            if ((sess.doubles[p.key]?.attempts || 0) !== p.attemptsAfter){
-              denied = "Can't undo — that double has changed since (another device?).";
+            if (p.visits.some((v)=> (sess.doubles[v.key]?.attempts || 0) !== v.attemptsAfter)){
+              denied = "Can't undo — those doubles have changed since (another device?).";
               return u;
             }
           } else if (p.finishingShot && p.sessionBefore){
@@ -1190,7 +1324,6 @@ function render(){
             return u;
           }
 
-          sess.doubles[p.key] = clone(p.prevDouble);
           sess.flow.cursorIndex = p.prevCursor;
           if (p.finishingShot){
             // Un-freeze the timer without counting the time spent finished.
@@ -1198,13 +1331,16 @@ function render(){
           }
           u.activeSession = sess;
 
-          // Reverse this throw's contribution rather than restoring a snapshot.
-          const ld = u.lifetime.doubles[p.key];
-          ld.attempts = Math.max(0, (ld.attempts || 0) - 1);
-          if (p.hitDart){
-            ld.hits = Math.max(0, (ld.hits || 0) - 1);
-            const field = `hits${p.hitDart}`;
-            ld[field] = Math.max(0, (ld[field] || 0) - 1);
+          // Reverse each visit's contribution rather than restoring a snapshot.
+          for (const v of p.visits){
+            sess.doubles[v.key] = clone(v.prevDouble);
+            const ld = u.lifetime.doubles[v.key];
+            ld.attempts = Math.max(0, (ld.attempts || 0) - 1);
+            if (v.hitDart){
+              ld.hits = Math.max(0, (ld.hits || 0) - 1);
+              const field = `hits${v.hitDart}`;
+              ld[field] = Math.max(0, (ld[field] || 0) - 1);
+            }
           }
           return u;
         });
@@ -1239,6 +1375,7 @@ function render(){
         // A finished session's timer is frozen at the finishing throw.
         endedAtMs: sess.timer?.pauseStartedAtMs || Date.now(),
         activeMs: sess.timer?.activeMsAccum || 0,
+        totalDarts: sessionDarts(sess.doubles),
         perDouble: sess.doubles
       };
     }
@@ -1382,6 +1519,12 @@ function render(){
     btnHit3.addEventListener("click", ()=> logResult("hit3").catch(showError));
     btnMiss.addEventListener("click", ()=> logResult("miss").catch(showError));
 
+    btnLater.addEventListener("click", ()=>{
+      logLater(elLaterDouble.value, Number(elLaterDarts.value)).then((recorded)=>{
+        if (recorded){ elLaterDouble.value = ""; elLaterDarts.value = ""; }
+      }).catch(showError);
+    });
+
     btnUndo.addEventListener("click", ()=> undoLastThrow().catch(showError));
 
     btnSaveDone.addEventListener("click", ()=> finalizeSession(model?.activeSession, { announce: true }).catch(showError));
@@ -1438,7 +1581,7 @@ function render(){
         enable(btnSaveDone, false);
 
         setHtml(elBoardBody, '<tr><td colspan="8" class="muted">Sign in to load…</td></tr>');
-        setHtml(elHistoryBody, '<tr><td colspan="2" class="muted">Sign in to load…</td></tr>');
+        setHtml(elHistoryBody, '<tr><td colspan="3" class="muted">Sign in to load…</td></tr>');
 
         if (tick) clearInterval(tick);
         if (unsubHeat){ unsubHeat(); unsubHeat = null; }
