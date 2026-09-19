@@ -237,7 +237,7 @@
             <li>The app automatically cycles back to the <strong>earliest unfinished double</strong> until everything is closed.</li>
             <li>Timer excludes paused time.</li>
             <li><strong>Kept throwing at one double because it felt close?</strong> Log it under <em>Stayed on this double</em> (hit on dart 4 to 15, or missed after 6 to 15 darts). Every 3 darts count as an attempt, and the darts past the first 3 are shown as <em>extra</em>.</li>
-            <li><strong>Missed a run of doubles, then hit one?</strong> Log it in one go under <em>Hit a later double</em>: pick the double and the total darts. The doubles skipped over are recorded as misses (3 darts each).</li>
+            <li><strong>Missed a run of doubles, then hit one?</strong> Log it in one go under <em>Hit a later double</em>: pick the double and the total darts, even if the one you hit took more than 3. The doubles skipped over are recorded as misses (3 darts each).</li>
             <li><strong>Undo last throw</strong> reverts your most recent hit or miss (including after a finished round removes the saved history row for that save).</li>
           </ul>
         </div>
@@ -420,7 +420,7 @@
       appId: "1:518662869581:web:672c48cf33a27772d54204"
     };
 
-    const REVISION = "rev-2026-09-19-v19";
+    const REVISION = "rev-2026-09-19-v20";
 
     const TARGETS = [
       ...Array.from({length:20}, (_,i)=>({ key:`D${i+1}`, label:`D${i+1}` })),
@@ -886,9 +886,12 @@ let uid = null;
       setOptions(elLaterDouble, doubleOptions, chosen);
 
       const skipped = ahead.findIndex((i)=> TARGETS[i].key === elLaterDouble.value) + 1; // 0 when none picked
-      const totals = skipped ? [1, 2, 3].map((dart)=> 3 * skipped + dart) : [];
-      const dartsOptions = '<option value="">Total darts…</option>' +
-        totals.map((total)=> `<option value="${total}">${total} darts (hit on dart ${total - 3 * skipped})</option>`).join("");
+      const totals = skipped ? Array.from({ length: MAX_STAY_DARTS }, (_, i)=> 3 * skipped + i + 1) : [];
+      const totalOption = (total)=> `<option value="${total}">${total} darts (hit on dart ${total - 3 * skipped})</option>`;
+      const dartsOptions = '<option value="">Total darts…</option>' + (skipped
+        ? `<optgroup label="Hit within 3 darts">${totals.slice(0, 3).map(totalOption).join("")}</optgroup>` +
+          `<optgroup label="Stayed on it (more than 3 darts)">${totals.slice(3).map(totalOption).join("")}</optgroup>`
+        : "");
       setOptions(elLaterDarts, dartsOptions, totals.includes(Number(elLaterDarts.value)) ? elLaterDarts.value : "");
 
       const total = Number(elLaterDarts.value);
@@ -898,7 +901,9 @@ let uid = null;
       let hint = "Pick the double you hit and the total darts since your last hit. The doubles before it are logged as misses (3 darts each).";
       if (canLog && ahead.length === 0) hint = "Nothing ahead of the current double yet.";
       if (canLog && ready){
-        hint = `Logs ${skipped} missed double${skipped === 1 ? "" : "s"} (${3 * skipped} darts), then ${elLaterDouble.value} hit on dart ${total - 3 * skipped}.`;
+        const dartsToHit = total - 3 * skipped;
+        hint = `Logs ${skipped} missed double${skipped === 1 ? "" : "s"} (${3 * skipped} darts), then ${elLaterDouble.value} hit on dart ${dartsToHit}` +
+          (dartsToHit > 3 ? `, ${dartsToHit - 3} of them extra.` : ".");
       }
       setText(elLaterHint, hint);
     }
@@ -1321,27 +1326,36 @@ function render(){
     }
 
     // One entry for "missed a run of doubles, then hit this one": every double before it in play
-    // order gets a missed 3-dart visit, and the total darts says which dart hit the target.
+    // order gets a missed 3-dart visit, and what is left of the total is the darts it took to hit the
+    // target, which may be more than 3 (then the extra darts are counted, as for a stay).
     function logLater(targetKey, totalDarts){
       return logVisits((sess)=>{
         const order = playOrder(sess);
         const skipped = order.findIndex((i)=> TARGETS[i].key === targetKey);
         if (skipped < 1) return { error: "That double isn't ahead of the current one any more." };
 
-        const hitDart = totalDarts - 3 * skipped;
-        if (!Number.isInteger(hitDart) || hitDart < 1 || hitDart > 3){
+        const dartsToHit = totalDarts - 3 * skipped;
+        if (!Number.isInteger(dartsToHit) || dartsToHit < 1 || dartsToHit > MAX_STAY_DARTS){
           const base = 3 * skipped;
-          return { error: `The ${skipped} skipped double${skipped === 1 ? "" : "s"} took ${base} darts, so hitting ${targetKey} means a total of ${base + 1}, ${base + 2} or ${base + 3}.` };
+          return { error: `The ${skipped} skipped double${skipped === 1 ? "" : "s"} took ${base} darts, so hitting ${targetKey} needs a total from ${base + 1} to ${base + MAX_STAY_DARTS}.` };
         }
 
         const visits = order.slice(0, skipped).map((i)=> ({ key: TARGETS[i].key, hitDart: null }));
-        visits.push({ key: targetKey, hitDart });
+        visits.push(...hitVisits(targetKey, dartsToHit));
         return { visits };
       });
     }
 
-    // Most darts offered when staying on one double: hit on dart 4..15, or missed after 6/9/12/15.
+    // Most darts offered at one double: hit on dart 4..15, or missed after 6/9/12/15.
     const MAX_STAY_DARTS = 15;
+
+    // The visits for going in on the Nth dart at one double: whole missed visits first, then the visit
+    // that hit. Darts past the first 3 are counted as extra (a stay).
+    function hitVisits(key, dartsToHit){
+      const visits = Array.from({ length: Math.ceil(dartsToHit / 3) - 1 }, ()=> ({ key, hitDart: null }));
+      visits.push({ key, hitDart: ((dartsToHit - 1) % 3) + 1, ...(dartsToHit > 3 ? { extra: dartsToHit - 3 } : {}) });
+      return visits;
+    }
     const STAY_OUTCOMES = [
       ...Array.from({ length: MAX_STAY_DARTS - 3 }, (_, i)=> `hit:${i + 4}`),
       ...Array.from({ length: (MAX_STAY_DARTS - 3) / 3 }, (_, i)=> `miss:${(i + 2) * 3}`),
@@ -1360,9 +1374,8 @@ function render(){
         if (!STAY_OUTCOMES.includes(`${kind}:${darts}`)) return { error: "Pick how the extra darts ended." };
 
         const key = TARGETS[idx].key;
-        const missedVisits = kind === "hit" ? Math.ceil(darts / 3) - 1 : darts / 3;
-        const visits = Array.from({ length: missedVisits }, ()=> ({ key, hitDart: null }));
-        if (kind === "hit") visits.push({ key, hitDart: ((darts - 1) % 3) + 1 });
+        if (kind === "hit") return { visits: hitVisits(key, darts) };
+        const visits = Array.from({ length: darts / 3 }, ()=> ({ key, hitDart: null }));
         visits[visits.length - 1].extra = darts - 3;
         return { visits };
       });

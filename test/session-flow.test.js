@@ -574,14 +574,15 @@ test("the darts total keeps adding up across ordinary throws and entries", async
   assert.equal(app.el("dartsPill").textContent, "13 darts");
 });
 
-test("a total that doesn't add up is refused and changes nothing", async () => {
+test("a total outside what the double could have taken is refused and changes nothing", async () => {
   const app = await startedApp();
   const before = app.user();
-  app.el("laterDouble").value = "D3";
-  app.el("laterDarts").value = "10"; // D1 and D2 took 6 darts, so D3 needs 7, 8 or 9
-  await app.click("btnLater"); // no render in between, so the dropdown's own filtering is bypassed
-
-  assert.match(app.alerts.at(-1), /7, 8 or 9/);
+  for (const bad of ["6", "22", "0", "abc"]) { // D1 and D2 took 6 darts, so D3 needs a total from 7 to 21
+    app.el("laterDouble").value = "D3";
+    app.el("laterDarts").value = bad;
+    await app.click("btnLater"); // no render in between, so the dropdown's own filtering is bypassed
+    assert.match(app.alerts.at(-1), /from 7 to 21/, bad);
+  }
   assert.deepEqual(app.user(), before);
 });
 
@@ -598,7 +599,7 @@ test("the Log button stays disabled until a double and a valid total are both ch
   app.renderTick();
   assert.equal(app.el("btnLater").disabled, false);
 
-  app.el("laterDarts").value = "12"; // not one of D3's totals
+  app.el("laterDarts").value = "30"; // not one of D3's totals (7 to 21)
   app.renderTick();
   assert.equal(app.el("btnLater").disabled, true);
   assert.equal(app.el("laterDarts").value, "", "an invalid total is cleared");
@@ -820,4 +821,130 @@ test("the history works out extra darts for a row that only has per-double data"
   } } } });
   await app.signIn();
   assert.match(app.el("historyBody").innerHTML, /mono">7 <span[^>]*>\+4<\/span>/);
+});
+
+test("12 darts with no hit (D1 to D4 missed), then D5 hit on its 6th dart: four Misses, then a stay", async () => {
+  const app = await startedApp();
+  for (let i = 0; i < 4; i++) await app.throwHit(1, "btnMiss"); // D1, D2, D3, D4: 12 darts, no hit
+  app.renderTick();
+  assert.equal(app.el("targetLabel").textContent, "D5", "the four Misses leave you on D5");
+
+  await logStay(app, "hit:6"); // D5 went in on its 6th dart
+
+  const { activeSession: session, lifetime } = app.user();
+  for (const key of ["D1", "D2", "D3", "D4"]) {
+    assert.equal(session.doubles[key].attempts, 1, `${key}: one missed 3-dart visit`);
+    assert.notEqual(session.doubles[key].completed, true);
+  }
+  assert.equal(session.doubles.D5.attempts, 2, "a missed visit (3 darts), then a visit that hit");
+  assert.equal(session.doubles.D5.hitDart, 3, "the 6th dart is the 3rd dart of the second visit");
+  assert.equal(session.doubles.D5.extraDarts, 3, "6 darts at D5 is 3 past the first 3");
+  assert.equal(lifetime.doubles.D5.attempts, 2);
+  assert.equal(lifetime.doubles.D5.hits3, 1);
+  app.renderTick();
+  assert.equal(app.el("progressPill").textContent, "1/21");
+  assert.equal(app.el("dartsPill").textContent, "18 darts · 3 extra", "12 + 6");
+  assert.equal(app.el("targetLabel").textContent, "D6");
+});
+
+// ---- "Hit a later double" where the double you hit took more than 3 darts ----
+
+test("hit D5 after 18 darts in one entry: D1 to D4 missed, D5 went in on its 6th dart", async () => {
+  const app = await startedApp();
+  await logLater(app, "D5", 18); // 4 skipped doubles = 12 darts, then 6 darts at D5
+
+  const { activeSession: session, lifetime } = app.user();
+  for (const key of ["D1", "D2", "D3", "D4"]) {
+    assert.equal(session.doubles[key].attempts, 1, `${key}: one missed visit`);
+    assert.notEqual(session.doubles[key].completed, true);
+    assert.equal(session.doubles[key].extraDarts, undefined, `${key}: skipped doubles get no extra darts`);
+  }
+  assert.equal(session.doubles.D5.attempts, 2);
+  assert.equal(session.doubles.D5.hitDart, 3);
+  assert.equal(session.doubles.D5.extraDarts, 3);
+  assert.equal(lifetime.doubles.D5.attempts, 2);
+  assert.equal(lifetime.doubles.D5.hits3, 1);
+  app.renderTick();
+  assert.equal(app.el("dartsPill").textContent, "18 darts · 3 extra");
+  assert.equal(app.el("progressPill").textContent, "1/21");
+  assert.equal(app.el("targetLabel").textContent, "D6");
+});
+
+test("one entry leaves exactly the same result as four Misses followed by a stay", async () => {
+  const oneEntry = await startedApp();
+  await logLater(oneEntry, "D5", 18);
+
+  const twoSteps = await startedApp();
+  for (let i = 0; i < 4; i++) await twoSteps.throwHit(1, "btnMiss");
+  await logStay(twoSteps, "hit:6");
+
+  const shape = (app) => {
+    const { activeSession: session, lifetime } = app.user();
+    return {
+      cursor: session.flow.cursorIndex,
+      doubles: Object.fromEntries(Object.entries(session.doubles)
+        .map(([key, d]) => [key, [d.attempts ?? 0, d.completed ?? false, d.hitDart ?? null, d.extraDarts ?? 0]])),
+      lifetime: Object.fromEntries(Object.entries(lifetime.doubles)
+        .map(([key, d]) => [key, [d.attempts ?? 0, d.hits ?? 0, d.hits1 ?? 0, d.hits2 ?? 0, d.hits3 ?? 0]])),
+    };
+  };
+  assert.deepEqual(shape(oneEntry), shape(twoSteps));
+});
+
+test("the dart choices for a later double now run up to 15 darts on the target, in two groups", async () => {
+  const app = await startedApp();
+  app.el("laterDouble").value = "D5";
+  app.renderTick();
+
+  const html = app.el("laterDarts").innerHTML;
+  const totals = [...html.matchAll(/<option value="(\d+)">/g)].map((m) => Number(m[1]));
+  assert.deepEqual(totals, Array.from({ length: 15 }, (_, i) => 13 + i), "13 to 27: 4 skipped doubles (12) + 1 to 15");
+  assert.match(html, /<optgroup label="Hit within 3 darts">/);
+  assert.match(html, /<optgroup label="Stayed on it \(more than 3 darts\)">/);
+  assert.match(html, /18 darts \(hit on dart 6\)/);
+});
+
+test("the hint says how many of the target's darts were extra", async () => {
+  const app = await startedApp();
+  app.el("laterDouble").value = "D5";
+  app.el("laterDarts").value = "18";
+  app.renderTick();
+  assert.match(app.el("laterHint").textContent, /4 missed doubles \(12 darts\), then D5 hit on dart 6, 3 of them extra/);
+
+  app.el("laterDarts").value = "14";
+  app.renderTick();
+  assert.match(app.el("laterHint").textContent, /then D5 hit on dart 2\.$/);
+});
+
+test("a long stay on the double you skipped to also works across the DBULL wrap", async () => {
+  const app = await startedApp();
+  await app.throwHit(1); // D1 hit
+  await app.throwHit(1, "btnMiss"); // D2 missed, stays open
+  await app.throwHit(18); // D3..D20 hit; now on DBULL with D2 still open behind it
+
+  await logLater(app, "D2", 8); // DBULL missed (3 darts), then D2 on its 5th dart
+
+  const d2 = app.user().activeSession.doubles.D2;
+  assert.equal(d2.attempts, 3, "the earlier miss, then a missed visit, then the hit");
+  assert.equal(d2.hitDart, 2, "the 5th dart is the 2nd dart of the second visit");
+  assert.equal(d2.extraDarts, 2);
+  assert.equal(app.user().activeSession.doubles.DBULL.attempts, 1);
+});
+
+test("undo reverses a combined skip-and-stay entry completely", async () => {
+  const app = await startedApp();
+  await logLater(app, "D5", 18);
+
+  await app.click("btnUndo");
+
+  const { activeSession: session, lifetime } = app.user();
+  for (const key of ["D1", "D2", "D3", "D4", "D5"]) {
+    assert.equal(session.doubles[key].attempts ?? 0, 0, `${key} session`);
+    assert.equal(lifetime.doubles[key]?.attempts ?? 0, 0, `${key} lifetime`);
+  }
+  assert.equal(session.doubles.D5.extraDarts, undefined);
+  assert.equal(lifetime.doubles.D5?.hits ?? 0, 0);
+  assert.equal(session.flow.cursorIndex, 0);
+  app.renderTick();
+  assert.equal(app.el("dartsPill").textContent, "0 darts");
 });
