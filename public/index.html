@@ -386,7 +386,7 @@
       appId: "1:518662869581:web:672c48cf33a27772d54204"
     };
 
-    const REVISION = "rev-2026-05-02-v13";
+    const REVISION = "rev-2026-09-18-v14";
 
     const TARGETS = [
       ...Array.from({length:20}, (_,i)=>({ key:`D${i+1}`, label:`D${i+1}` })),
@@ -449,8 +449,16 @@ let uid = null;
     /** @type {null | { startedAtMs:number, key:string, prevLd:object, fullSessionBefore:object, finishingShot?:boolean, lastSavedSessionKey?:string }} */
     let pendingUndo = null;
 
+    // localStorage can throw when site data is blocked; the app must still load without it.
+    function storageGet(key){
+      try { return localStorage.getItem(key); } catch (_) { return null; }
+    }
+    function storageSet(key, value){
+      try { localStorage.setItem(key, value); } catch (_) {}
+    }
+
     // Board sort preference
-    let boardSort = localStorage.getItem("dt_boardSort") || "order";
+    let boardSort = storageGet("dt_boardSort") || "order";
     if (elBoardSort) elBoardSort.value = boardSort;
 
     function enable(el, on=true){
@@ -1170,6 +1178,8 @@ function render(){
         payload = {
           createdAt: serverTimestamp(),
           startedAtMs: sess.meta.startedAtMs,
+          // The player's own calendar date, so downstream sync doesn't have to guess a timezone.
+          localDate: msToLocalISODate(sess.meta.startedAtMs),
           endedAtMs: now,
           activeMs,
           perDouble: sess.doubles
@@ -1194,7 +1204,7 @@ function render(){
         if (elBoardSort){
           elBoardSort.addEventListener("change", ()=>{
             boardSort = elBoardSort.value || "order";
-            localStorage.setItem("dt_boardSort", boardSort);
+            storageSet("dt_boardSort", boardSort);
             render();
           });
         }
@@ -1216,6 +1226,15 @@ function render(){
     });
     btnLogout.addEventListener("click", ()=> signOut(auth));
     btnStartNew.addEventListener("click", async ()=>{
+      // Starting over replaces the active session, so confirm before discarding logged throws.
+      const active = model?.activeSession;
+      const throws = active ? Object.values(active.doubles || {}).reduce((n, d)=> n + (d?.attempts || 0), 0) : 0;
+      if (throws > 0){
+        const done = Object.values(active.doubles).filter(d=>d?.completed).length;
+        const ok = confirm(`Discard the current session?\n\n${throws} throw${throws === 1 ? "" : "s"} logged, ${done}/${TARGETS.length} doubles done. This can't be undone.`);
+        if (!ok) return;
+      }
+
       // iOS Safari can ignore programmatic smooth scroll *after* an await (no longer a user gesture).
       // So we scroll synchronously first, then run the transaction, then scroll again as a best-effort.
       const focusSession = ()=>{
@@ -1256,6 +1275,7 @@ function render(){
       if (unsubUser){ unsubUser(); unsubUser = null; }
       if (unsubSessions){ unsubSessions(); unsubSessions = null; }
       if (unsubHeat){ unsubHeat(); unsubHeat = null; }
+      if (unsubSince){ unsubSince(); unsubSince = null; }
       __heatLastVersion = -1;
       pendingUndo = null;
       model = { activeSession:null, lifetime:null, sessions:[], heat:null };

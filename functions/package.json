@@ -1,0 +1,16 @@
+{
+  "name": "mydoublesprogress-functions",
+  "private": true,
+  "main": "index.js",
+  "engines": {
+    "node": "22"
+  },
+  "scripts": {
+    "lint": "node --check index.js && node --check timeLeftMyDouble/config.js && node --check timeLeftMyDouble/ingestionClient.js && node --check timeLeftMyDouble/mappers.js && node --check timeLeftMyDouble/triggers.js",
+    "test": "node --test test/timeLeftMyDouble.test.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.4.0",
+    "firebase-functions": "^6.4.0"
+  }
+}

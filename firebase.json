@@ -1,4 +1,10 @@
 {
+  "functions": {
+    "source": "functions"
+  },
+  "firestore": {
+    "rules": "firestore.rules"
+  },
   "hosting": {
     "public": "public",
     "ignore": [
@@ -10,6 +16,15 @@
       "**/index_*.html"
     ],
     "headers": [
+      {
+        "source": "/",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=0, must-revalidate"
+          }
+        ]
+      },
       {
         "source": "**/*.html",
         "headers": [

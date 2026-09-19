@@ -1,0 +1,12 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // This app currently stores client data in Realtime Database at /users/{uid}.
+    // No Firestore collections are used by the app code, so client Firestore
+    // access stays closed until a concrete Firestore data model is introduced.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
