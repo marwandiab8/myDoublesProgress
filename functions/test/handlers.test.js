@@ -16,9 +16,11 @@ Object.assign(process.env, {
 });
 
 const fetchCalls = [];
+let timeLeftResponse = () => ({ created: 1 });
 global.fetch = async (url, init) => {
-  fetchCalls.push({ url, headers: init.headers, body: JSON.parse(init.body), bytes: Buffer.byteLength(init.body) });
-  return { ok: true, status: 200, text: async () => JSON.stringify({ created: 1 }) };
+  const body = JSON.parse(init.body);
+  fetchCalls.push({ url, headers: init.headers, body, bytes: Buffer.byteLength(init.body) });
+  return { ok: true, status: 200, text: async () => JSON.stringify(timeLeftResponse(body)) };
 };
 
 const dbReads = [];
@@ -54,6 +56,7 @@ const eveningSession = {
 };
 
 test.beforeEach(() => {
+  timeLeftResponse = () => ({ created: 1 });
   fetchCalls.length = 0;
   dbReads.length = 0;
   storedSessions = {};
@@ -140,4 +143,35 @@ test("the backfill limit comes from the query or body and is clamped to 1..1000"
   await callBackfill({ token: "test-token", body: { limit: 25 } });
   await callBackfill({ token: "test-token", query: { limit: "5000" } });
   assert.deepEqual(dbReads.map((r) => r.limit), [7, 25, 1000]);
+});
+
+test("when Time Left reports per-item errors, the backfill shows which sessions and the distinct messages", async () => {
+  storedSessions = Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`s${i}`, eveningSession]));
+  timeLeftResponse = (body) => ({
+    updated: body.items.length,
+    errors: body.items.map((_, index) => ({
+      index,
+      message: index % 2 ? "eventClass is not allowed for this source connection." : "Something else went wrong.",
+    })),
+  });
+
+  const out = await callBackfill({ token: "test-token" });
+
+  assert.equal(out.body.failed, 30);
+  const [first] = out.body.batches;
+  assert.equal(first.errors, first.count);
+  assert.equal(first.errorSamples.length, 2);
+  assert.match(first.errorSamples[0].sessionId, /^s\d+$/, "names the session, not just an index");
+  assert.deepEqual(
+    out.body.errorSummary.map((entry) => entry.message).sort(),
+    ["Something else went wrong.", "eventClass is not allowed for this source connection."],
+  );
+  assert.equal(out.body.errorSummary.reduce((n, entry) => n + entry.count, 0), 30);
+});
+
+test("with no errors there is no errorSummary", async () => {
+  storedSessions = { s1: eveningSession };
+  const out = await callBackfill({ token: "test-token" });
+  assert.equal(out.body.errorSummary, undefined);
+  assert.equal(out.body.failed, 0);
 });

@@ -109,18 +109,37 @@ exports.backfillMyDoubleSessionsToTimeLeft = functions
         batches: [],
       };
 
+      const errorCounts = new Map();
       for (const batch of chunkBySize(items, { calendarId: config.calendarId, connectionId: config.connectionId })) {
         const response = await sendTimeLeftMyDoubleItemsBatch(batch, { throwOnError: true });
+        const errors = Array.isArray(response.errors) ? response.errors : [];
         result.sent += batch.length;
-        result.failed += Array.isArray(response.errors) ? response.errors.length : 0;
+        result.failed += errors.length;
+        for (const error of errors) {
+          const message = String(error && error.message || "unknown error").slice(0, 200);
+          errorCounts.set(message, (errorCounts.get(message) || 0) + 1);
+        }
         result.batches.push({
           count: batch.length,
           created: response.created || 0,
           updated: response.updated || 0,
           moved: response.moved || 0,
           needsDateReview: response.needsDateReview || 0,
-          errors: Array.isArray(response.errors) ? response.errors.length : 0,
+          errors: errors.length,
+          // Which sessions failed and why (Time Left's own message), so a count isn't all you get.
+          errorSamples: errors.slice(0, 2).map((error) => ({
+            sessionId: batch[error && error.index] && batch[error.index].sourceDocumentId,
+            message: String(error && error.message || "unknown error").slice(0, 200),
+          })),
         });
+      }
+      // Time Left writes each card first and then a second "life event" record; that second step is
+      // where errors come from, so the same message usually repeats. Show each distinct one once.
+      if (errorCounts.size) {
+        result.errorSummary = [...errorCounts]
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 5)
+          .map(([message, count]) => ({ message, count }));
       }
 
       res.json(result);
