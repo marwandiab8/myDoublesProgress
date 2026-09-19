@@ -26,8 +26,28 @@ permissions:
   contents: read
 
 jobs:
-  deploy:
+  # Nothing is deployed unless these pass. They use only Node built-ins, so there is nothing to install.
+  test:
     # Pinned: ubuntu-latest moves to Ubuntu 26 on 2026-10-19. Bump this deliberately.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22 # keep in step with "engines" in functions/package.json
+
+      - name: Page tests (save, undo, data migration)
+        run: node --test test/session-flow.test.js
+
+      - name: Cloud Functions tests and syntax check
+        working-directory: functions
+        run: |
+          npm test
+          npm run lint
+
+  deploy:
+    needs: test
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
