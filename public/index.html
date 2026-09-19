@@ -386,7 +386,7 @@
       appId: "1:518662869581:web:672c48cf33a27772d54204"
     };
 
-    const REVISION = "rev-2026-09-18-v14";
+    const REVISION = "rev-2026-09-18-v15";
 
     const TARGETS = [
       ...Array.from({length:20}, (_,i)=>({ key:`D${i+1}`, label:`D${i+1}` })),
@@ -446,8 +446,11 @@ let uid = null;
     let unsubHeat = null;
     let model = null; // { activeSession, lifetime, sessions: [] }
     let tick = null;
-    /** @type {null | { startedAtMs:number, key:string, prevLd:object, fullSessionBefore:object, finishingShot?:boolean, lastSavedSessionKey?:string }} */
+    /** @type {null | { startedAtMs:number, key:string, prevDouble:object, prevCursor:number, hitDart:(number|null), attemptsAfter:number, finishingShot:boolean, sessionKey:(string|null), activeMsAtFinish:number, sessionBefore:(object|null) }} */
     let pendingUndo = null;
+    // startedAtMs of rounds being written to history right now (blocks duplicate saves and Undo).
+    const finalizing = new Set();
+    let recoveryChecked = false;
 
     // localStorage can throw when site data is blocked; the app must still load without it.
     function storageGet(key){
@@ -800,13 +803,13 @@ function render(){
 
       enable(btnLogout, signedIn);
       enable(btnStartNew, signedIn);
-      enable(btnPauseResume, signedIn && !!sess);
+      enable(btnPauseResume, signedIn && !!sess && !isFinished(sess));
       const canLog = signedIn && !!sess && !sess.timer?.isPaused && !isFinished(sess);
       enable(btnHit1, canLog);
       enable(btnHit2, canLog);
       enable(btnHit3, canLog);
       enable(btnMiss, canLog);
-      enable(btnUndo, signedIn && !!pendingUndo);
+      enable(btnUndo, signedIn && !!pendingUndo && finalizing.size === 0);
       enable(btnSaveDone, signedIn && !!sess && isFinished(sess));
 
       // Timer UI
@@ -989,10 +992,19 @@ function render(){
       });
     }
 
+    function clone(v){ return JSON.parse(JSON.stringify(v)); }
+
+    // Push keys are generated locally; nothing is written until the session is saved.
+    function newSessionKey(){
+      return push(ref(db, `users/${uid}/sessions`)).key;
+    }
+
     async function startNewSession(){
       pendingUndo = null;
       await tx((u)=>{
         u.activeSession = defaultSession();
+        // Fixed history key for this session, so saving (and undoing a save) is idempotent.
+        u.activeSession.meta.sessionKey = newSessionKey();
       });
     }
 
@@ -1000,6 +1012,8 @@ function render(){
       await tx((u)=>{
         if (!u.activeSession) return;
         u.activeSession = ensureSession(u.activeSession);
+        // A finished round's timer is frozen; resuming it would keep adding time.
+        if (isFinished(u.activeSession)) return;
 
         const now = Date.now();
         const t = u.activeSession.timer;
@@ -1017,7 +1031,7 @@ function render(){
       });
     }
 
-        async function logResult(type){ // "hit1"|"hit2"|"hit3"|"miss"
+    async function logResult(type){ // "hit1"|"hit2"|"hit3"|"miss"
       if (!uid) return;
       let capturedUndo = null;
 
@@ -1038,18 +1052,20 @@ function render(){
         if (idx === -1) return u;
 
         const key = TARGETS[idx].key;
-        const fullSessionBefore = JSON.parse(JSON.stringify(ensureSession(sess)));
-        const prevLd = JSON.parse(JSON.stringify(u.lifetime.doubles[key] || { attempts:0, hits:0, hits1:0, hits2:0, hits3:0 }));
+        const sessionBefore = clone(sess);
         const startedAtMs = sess.meta?.startedAtMs;
 
         const sd = sess.doubles[key] || { attempts:0, completed:false, hitDart:null, completedAt:null };
         const ld = u.lifetime.doubles[key] || { attempts:0, hits:0, hits1:0, hits2:0, hits3:0 };
+        const prevDouble = clone(sd);
 
         sd.attempts = (sd.attempts || 0) + 1;
         ld.attempts = (ld.attempts || 0) + 1;
 
+        let hitDart = null;
         if (type !== "miss"){
           const d = type === "hit1" ? 1 : type === "hit2" ? 2 : 3;
+          hitDart = d;
           sd.completed = true;
           sd.hitDart = d;
           sd.completedAt = Date.now();
@@ -1091,112 +1107,145 @@ function render(){
             t.isPaused = true;
             t.pauseStartedAtMs = now;
           }
+          // Sessions started before history keys existed still need one to be saved under.
+          if (!sess.meta.sessionKey) sess.meta.sessionKey = newSessionKey();
         }
 
-        capturedUndo = { startedAtMs, key, prevLd, fullSessionBefore, finishingShot };
+        // Undo reverses only this throw (not the whole session), so pauses and throws made
+        // elsewhere in the meantime are left alone.
+        capturedUndo = {
+          startedAtMs, key, prevDouble, hitDart, finishingShot,
+          prevCursor: cur,
+          attemptsAfter: sd.attempts,
+          sessionKey: sess.meta.sessionKey || null,
+          activeMsAtFinish: sess.timer.activeMsAccum || 0,
+          // Only needed to rebuild the session if the finished round was already saved and cleared.
+          sessionBefore: finishingShot ? sessionBefore : null
+        };
         return u;
       });
 
       if (!result.committed || !capturedUndo) return;
 
+      pendingUndo = capturedUndo;
       if (capturedUndo.finishingShot){
-        try{
-          const pushedKey = await saveSession();
-          pendingUndo = { ...capturedUndo, lastSavedSessionKey: pushedKey || undefined };
-        }catch(err){
-          showError(err);
-          pendingUndo = { ...capturedUndo, lastSavedSessionKey: undefined };
+        const finished = result.snapshot.child("activeSession").val();
+        if (finished){
+          try{
+            await finalizeSession(ensureSession(finished), { announce: true });
+          }catch(err){
+            // The finished round stays in activeSession, so "Save session" (or a reload) retries.
+            showError(err);
+          }
         }
-      } else {
-        pendingUndo = capturedUndo;
       }
     }
 
     async function undoLastThrow(){
-      if (!uid || !pendingUndo) return;
+      if (!uid || !pendingUndo || finalizing.size) return;
       const p = pendingUndo;
 
       try{
-        let undoDenied = null;
+        let denied = null;
         const undoResult = await runTransaction(ref(db, `users/${uid}`), (current)=>{
+          denied = null;
           const u = current || {};
           ensureLifetime(u);
 
-          const restoreShot = ()=>{
-            u.activeSession = ensureSession(JSON.parse(JSON.stringify(p.fullSessionBefore)));
-            u.lifetime.doubles[p.key] = JSON.parse(JSON.stringify(p.prevLd));
-          };
-
-          if (p.finishingShot || p.lastSavedSessionKey){
-            if (u.activeSession){
-              undoDenied = "Can't undo — a new session is already in progress. Remove the duplicate history entry in Firebase console if needed.";
+          let sess = u.activeSession ? ensureSession(u.activeSession) : null;
+          if (sess){
+            if (sess.meta.startedAtMs !== p.startedAtMs){
+              denied = "Can't undo — a different session is now in progress.";
               return u;
             }
-            restoreShot();
+            if ((sess.doubles[p.key]?.attempts || 0) !== p.attemptsAfter){
+              denied = "Can't undo — that double has changed since (another device?).";
+              return u;
+            }
+          } else if (p.finishingShot && p.sessionBefore){
+            // The finished round was already saved and cleared; rebuild it from before the throw.
+            sess = ensureSession(clone(p.sessionBefore));
+          } else {
+            denied = "Can't undo — session changed (reload or new session).";
             return u;
           }
 
-          if (!u.activeSession || u.activeSession.meta?.startedAtMs !== p.startedAtMs){
-            undoDenied = "Can't undo — session changed (reload or new session).";
-            return u;
+          sess.doubles[p.key] = clone(p.prevDouble);
+          sess.flow.cursorIndex = p.prevCursor;
+          if (p.finishingShot){
+            // Un-freeze the timer without counting the time spent finished.
+            sess.timer = { isPaused:false, pauseStartedAtMs:null, activeMsAccum:p.activeMsAtFinish, lastResumedAtMs:Date.now() };
           }
+          u.activeSession = sess;
 
-          restoreShot();
+          // Reverse this throw's contribution rather than restoring a snapshot.
+          const ld = u.lifetime.doubles[p.key];
+          ld.attempts = Math.max(0, (ld.attempts || 0) - 1);
+          if (p.hitDart){
+            ld.hits = Math.max(0, (ld.hits || 0) - 1);
+            const field = `hits${p.hitDart}`;
+            ld[field] = Math.max(0, (ld[field] || 0) - 1);
+          }
           return u;
         });
 
-        if (undoDenied){
-          alert(undoDenied);
+        if (denied){
+          alert(denied);
           return;
         }
         if (!undoResult.committed) return;
 
-        if (p.lastSavedSessionKey){
-          await remove(ref(db, `users/${uid}/sessions/${p.lastSavedSessionKey}`));
-        }
-
         pendingUndo = null;
+
+        if (p.finishingShot && p.sessionKey){
+          try{
+            await remove(ref(db, `users/${uid}/sessions/${p.sessionKey}`));
+          }catch(err){
+            // Finishing this session again overwrites the same history key, so it self-heals.
+            showError({ code: "history-not-removed", message: "Throw undone, but the saved history entry couldn't be removed. It will be replaced when you finish this session again." });
+          }
+        }
       }catch(err){
         showError(err);
       }
     }
 
-    async function saveSession(){
-      let payload = null;
+    function historyPayload(sess){
+      return {
+        createdAt: serverTimestamp(),
+        startedAtMs: sess.meta.startedAtMs,
+        // The player's own calendar date, so downstream sync doesn't have to guess a timezone.
+        localDate: msToLocalISODate(sess.meta.startedAtMs),
+        // A finished session's timer is frozen at the finishing throw.
+        endedAtMs: sess.timer?.pauseStartedAtMs || Date.now(),
+        activeMs: sess.timer?.activeMsAccum || 0,
+        perDouble: sess.doubles
+      };
+    }
 
-      await tx((u)=>{
-        if (!u.activeSession) return;
-        u.activeSession = ensureSession(u.activeSession);
+    // Saves a finished round to history, then clears it from activeSession. The history key is fixed
+    // per session (meta.sessionKey), so a retry overwrites the same row instead of duplicating it,
+    // and a failure or crash between the two writes leaves a finished activeSession to save again.
+    async function finalizeSession(sess, { announce = false } = {}){
+      if (!uid || !sess || !isFinished(sess)) return null;
+      const startedAtMs = sess.meta.startedAtMs;
+      if (finalizing.has(startedAtMs)) return null;
+      const key = sess.meta.sessionKey || newSessionKey();
 
-        const sess = u.activeSession;
-        if (!isFinished(sess)) return;
-
-        const now = Date.now();
-        const t = sess.timer;
-        const activeMs = t?.activeMsAccum || 0;
-
-        payload = {
-          createdAt: serverTimestamp(),
-          startedAtMs: sess.meta.startedAtMs,
-          // The player's own calendar date, so downstream sync doesn't have to guess a timezone.
-          localDate: msToLocalISODate(sess.meta.startedAtMs),
-          endedAtMs: now,
-          activeMs,
-          perDouble: sess.doubles
-        };
-
-        u.activeSession = null;
-      });
-
-      if (payload && uid){
-        const sessionsRef = ref(db, `users/${uid}/sessions`);
-        const newRef = push(sessionsRef);
-        await set(newRef, payload);
-        alert("✅ Session saved automatically.");
-        return newRef.key;
+      finalizing.add(startedAtMs);
+      try{
+        await set(ref(db, `users/${uid}/sessions/${key}`), historyPayload(sess));
+        await tx((u)=>{
+          const active = u.activeSession;
+          if (active && active.meta?.startedAtMs === startedAtMs && isFinished(ensureSession(active))){
+            u.activeSession = null;
+          }
+        });
+        if (announce) alert("✅ Session saved automatically.");
+        return key;
+      } finally {
+        finalizing.delete(startedAtMs);
       }
-      alert("Finish all doubles first (or session not loaded).");
-      return null;
     }
 
         if (elSinceDate){ elSinceDate.addEventListener("change", ()=>{ subscribeSinceStats(); }); }
@@ -1269,7 +1318,7 @@ function render(){
 
     btnUndo.addEventListener("click", ()=> undoLastThrow().catch(showError));
 
-    btnSaveDone.addEventListener("click", ()=> saveSession().catch(showError));
+    btnSaveDone.addEventListener("click", ()=> finalizeSession(model?.activeSession, { announce: true }).catch(showError));
 
     onAuthStateChanged(auth, (user)=>{
       if (unsubUser){ unsubUser(); unsubUser = null; }
@@ -1278,6 +1327,7 @@ function render(){
       if (unsubSince){ unsubSince(); unsubSince = null; }
       __heatLastVersion = -1;
       pendingUndo = null;
+      recoveryChecked = false;
       model = { activeSession:null, lifetime:null, sessions:[], heat:null };
 
       if (user){
@@ -1294,6 +1344,15 @@ function render(){
 
           model.activeSession = v.activeSession || null;
           model.lifetime = v.lifetime;
+
+          // A finished round still sitting in activeSession means an earlier save failed or was
+          // interrupted (a normal finish is cleared right away). Finish saving it, once per sign-in.
+          if (!recoveryChecked){
+            recoveryChecked = true;
+            if (v.activeSession && isFinished(v.activeSession)){
+              finalizeSession(v.activeSession).catch(showError);
+            }
+          }
           render();
         }, (err)=> showError(err));
         unsubUser = ()=> offUser();
