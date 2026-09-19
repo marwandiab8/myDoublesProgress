@@ -236,6 +236,7 @@
             <li>If you miss a double, it stays unfinished and will be attempted again next round.</li>
             <li>The app automatically cycles back to the <strong>earliest unfinished double</strong> until everything is closed.</li>
             <li>Timer excludes paused time.</li>
+            <li><strong>Kept throwing at one double because it felt close?</strong> Log it under <em>Stayed on this double</em> (hit on dart 4 to 15, or missed after 6 to 15 darts). Every 3 darts count as an attempt, and the darts past the first 3 are shown as <em>extra</em>.</li>
             <li><strong>Missed a run of doubles, then hit one?</strong> Log it in one go under <em>Hit a later double</em>: pick the double and the total darts. The doubles skipped over are recorded as misses (3 darts each).</li>
             <li><strong>Undo last throw</strong> reverts your most recent hit or miss (including after a finished round removes the saved history row for that save).</li>
           </ul>
@@ -301,6 +302,17 @@
             <button class="btn-ok btn-compact disabled" id="btnLater" type="button">Log</button>
           </div>
           <div class="mini" id="laterHint" style="margin-top:8px;"></div>
+        </div>
+
+        <div class="note" style="margin-top:12px;">
+          <div><strong>Stayed on this double</strong></div>
+          <div class="row" style="margin-top:8px; gap:10px;">
+            <label class="pill"><strong>Ended</strong>
+              <select id="stayOutcome" class="selectInput" title="How your extra darts at the current double ended"></select>
+            </label>
+            <button class="btn-ok btn-compact disabled" id="btnStay" type="button">Log</button>
+          </div>
+          <div class="mini" id="stayHint" style="margin-top:8px;"></div>
         </div>
 
         <div class="row" style="margin-top:12px;">
@@ -408,7 +420,7 @@
       appId: "1:518662869581:web:672c48cf33a27772d54204"
     };
 
-    const REVISION = "rev-2026-09-18-v18";
+    const REVISION = "rev-2026-09-19-v19";
 
     const TARGETS = [
       ...Array.from({length:20}, (_,i)=>({ key:`D${i+1}`, label:`D${i+1}` })),
@@ -439,6 +451,9 @@ const elAuthStatus = document.getElementById("authStatus");
     const elLaterDarts = document.getElementById("laterDarts");
     const elLaterHint = document.getElementById("laterHint");
     const btnLater = document.getElementById("btnLater");
+    const elStayOutcome = document.getElementById("stayOutcome");
+    const elStayHint = document.getElementById("stayHint");
+    const btnStay = document.getElementById("btnStay");
         const elBoardBody = document.getElementById("boardBody");
     const elHistoryBody = document.getElementById("historyBody");
 
@@ -642,7 +657,9 @@ let uid = null;
         const dur = (typeof s.activeMs === "number") ? fmt(s.activeMs) : "—";
         // Sessions saved before totalDarts existed still have attempts/hitDart to work it out from.
         const darts = (typeof s.totalDarts === "number") ? s.totalDarts : (s.perDouble ? sessionDarts(s.perDouble) : null);
-        return `<tr><td>${date}</td><td class="right mono">${dur}</td><td class="right mono">${darts == null ? "—" : darts}</td></tr>`;
+        const extra = (typeof s.extraDarts === "number") ? s.extraDarts : (s.perDouble ? sessionExtra(s.perDouble) : 0);
+        const extraNote = extra > 0 ? ` <span class="muted" title="Extra darts thrown past 3 at one double">+${extra}</span>` : "";
+        return `<tr><td>${date}</td><td class="right mono">${dur}</td><td class="right mono">${darts == null ? "—" : darts}${extraNote}</td></tr>`;
       });
       setHtml(elHistoryBody, rows.join(""));
     }
@@ -847,6 +864,20 @@ let uid = null;
       if (select.value !== keep) select.value = keep; // rewriting the options resets it to the first one
     }
 
+    function renderStay(sess, canLog){
+      const idx = canLog ? nextIndexFrom(sess, sess.flow?.cursorIndex ?? 0) : -1;
+      const hits = STAY_OUTCOMES.filter((o)=> o.startsWith("hit:")).map((o)=> `<option value="${o}">Hit on dart ${o.slice(4)}</option>`);
+      const misses = STAY_OUTCOMES.filter((o)=> o.startsWith("miss:")).map((o)=> `<option value="${o}">Missed after ${o.slice(5)} darts</option>`);
+      const options = '<option value="">More than 3 darts…</option>' + (idx === -1 ? "" :
+        `<optgroup label="Hit it on dart…">${hits.join("")}</optgroup><optgroup label="Missed, then moved on after…">${misses.join("")}</optgroup>`);
+      const kept = idx !== -1 && STAY_OUTCOMES.includes(elStayOutcome.value) ? elStayOutcome.value : "";
+      setOptions(elStayOutcome, options, kept);
+      enable(btnStay, canLog && kept !== "");
+      setText(elStayHint, idx === -1
+        ? "Threw more than 3 darts at the current double? Log how it ended here."
+        : `Threw more than 3 darts at ${TARGETS[idx].label} because it felt close? Log how it ended; the darts past 3 are counted as extra.`);
+    }
+
     function renderLater(sess, canLog){
       const ahead = canLog ? playOrder(sess).slice(1) : []; // doubles further along than the current one
       const doubleOptions = '<option value="">Double you hit…</option>' +
@@ -889,6 +920,7 @@ function render(){
       enable(btnUndo, signedIn && !!pendingUndo && finalizing.size === 0);
       enable(btnSaveDone, signedIn && !!sess && isFinished(sess));
       renderLater(sess, canLog);
+      renderStay(sess, canLog);
 
       // Timer UI
       if (!sess){
@@ -908,7 +940,7 @@ function render(){
 
         const doneCount = Object.values(sess.doubles||{}).filter(d=>d.completed).length;
         setText(elProgressPill, `${doneCount}/${TARGETS.length}`);
-        setText(elDartsPill, dartsLabel(sessionDarts(sess.doubles)));
+        setText(elDartsPill, dartsSummary(sess.doubles));
 
         const curIdx = sess.flow?.cursorIndex ?? 0;
         const idx = nextIndexFrom(sess, curIdx);
@@ -979,7 +1011,7 @@ function render(){
           html: `
             <tr>
               <td><strong>${t.label}</strong></td>
-              <td class="right">${s.attempts || 0}</td>
+              <td class="right">${s.attempts || 0}${s.extraDarts ? ` <span class="muted" title="Extra darts thrown at this double">(+${s.extraDarts})</span>` : ""}</td>
               <td class="center">${status}</td>
               <td class="center">${hitDart}</td>
               <td class="right">${l.attempts || 0}</td>
@@ -1139,6 +1171,15 @@ function render(){
     function dartsLabel(n){
       return `${n} dart${n === 1 ? "" : "s"}`;
     }
+    function sessionExtra(doubles){
+      return TARGETS.reduce((sum, t)=> sum + (doubles?.[t.key]?.extraDarts || 0), 0);
+    }
+    // "60 darts" or, when some doubles were stayed on, "60 darts · 12 extra".
+    function dartsSummary(doubles){
+      const extra = sessionExtra(doubles);
+      const label = dartsLabel(sessionDarts(doubles));
+      return extra > 0 ? `${label} · ${extra} extra` : label;
+    }
 
     // Records 3-dart visits, in play order, inside a transaction. Each visit is at one double:
     // hitDart 1-3 if it was hit on that dart, null for a miss. Returns what Undo needs.
@@ -1170,6 +1211,10 @@ function render(){
           if (d === 2) ld.hits2 = (ld.hits2 || 0) + 1;
           if (d === 3) ld.hits3 = (ld.hits3 || 0) + 1;
         }
+
+        // Darts thrown past the first 3 in one go at this double (a deliberate "stay"), kept apart
+        // from normal misses that come round again later.
+        if (visit.extra) sd.extraDarts = (sd.extraDarts || 0) + visit.extra;
 
         sess.doubles[key] = sd;
         u.lifetime.doubles[key] = ld;
@@ -1295,6 +1340,34 @@ function render(){
       });
     }
 
+    // Most darts offered when staying on one double: hit on dart 4..15, or missed after 6/9/12/15.
+    const MAX_STAY_DARTS = 15;
+    const STAY_OUTCOMES = [
+      ...Array.from({ length: MAX_STAY_DARTS - 3 }, (_, i)=> `hit:${i + 4}`),
+      ...Array.from({ length: (MAX_STAY_DARTS - 3) / 3 }, (_, i)=> `miss:${(i + 2) * 3}`),
+    ];
+
+    // Threw more than 3 darts at the current double because it felt close. "hit:7" means it went in on
+    // the 7th dart; "miss:9" means 9 darts without a hit before moving on. Recorded as the 3-dart visits
+    // it really was (so darts and attempts stay consistent with everything else), with the darts past
+    // the first 3 counted as extra.
+    function logStay(outcome){
+      const [kind, count] = String(outcome).split(":");
+      const darts = Number(count);
+      return logVisits((sess)=>{
+        const idx = nextIndexFrom(sess, sess.flow?.cursorIndex ?? 0);
+        if (idx === -1) return null;
+        if (!STAY_OUTCOMES.includes(`${kind}:${darts}`)) return { error: "Pick how the extra darts ended." };
+
+        const key = TARGETS[idx].key;
+        const missedVisits = kind === "hit" ? Math.ceil(darts / 3) - 1 : darts / 3;
+        const visits = Array.from({ length: missedVisits }, ()=> ({ key, hitDart: null }));
+        if (kind === "hit") visits.push({ key, hitDart: ((darts - 1) % 3) + 1 });
+        visits[visits.length - 1].extra = darts - 3;
+        return { visits };
+      });
+    }
+
     async function undoLastThrow(){
       if (!uid || !pendingUndo || finalizing.size) return;
       const p = pendingUndo;
@@ -1312,7 +1385,9 @@ function render(){
               denied = "Can't undo — a different session is now in progress.";
               return u;
             }
-            if (p.visits.some((v)=> (sess.doubles[v.key]?.attempts || 0) !== v.attemptsAfter)){
+            // A stay is several visits at one double; only its final count has to match what's there now.
+            const finalAttempts = new Map(p.visits.map((v)=> [v.key, v.attemptsAfter]));
+            if ([...finalAttempts].some(([key, attempts])=> (sess.doubles[key]?.attempts || 0) !== attempts)){
               denied = "Can't undo — those doubles have changed since (another device?).";
               return u;
             }
@@ -1332,7 +1407,8 @@ function render(){
           u.activeSession = sess;
 
           // Reverse each visit's contribution rather than restoring a snapshot.
-          for (const v of p.visits){
+          // Newest first, so a double visited more than once ends up back at its earliest state.
+          for (const v of [...p.visits].reverse()){
             sess.doubles[v.key] = clone(v.prevDouble);
             const ld = u.lifetime.doubles[v.key];
             ld.attempts = Math.max(0, (ld.attempts || 0) - 1);
@@ -1376,6 +1452,7 @@ function render(){
         endedAtMs: sess.timer?.pauseStartedAtMs || Date.now(),
         activeMs: sess.timer?.activeMsAccum || 0,
         totalDarts: sessionDarts(sess.doubles),
+        extraDarts: sessionExtra(sess.doubles),
         perDouble: sess.doubles
       };
     }
@@ -1518,6 +1595,12 @@ function render(){
     btnHit2.addEventListener("click", ()=> logResult("hit2").catch(showError));
     btnHit3.addEventListener("click", ()=> logResult("hit3").catch(showError));
     btnMiss.addEventListener("click", ()=> logResult("miss").catch(showError));
+
+    btnStay.addEventListener("click", ()=>{
+      logStay(elStayOutcome.value).then((recorded)=>{
+        if (recorded) elStayOutcome.value = "";
+      }).catch(showError);
+    });
 
     btnLater.addEventListener("click", ()=>{
       logLater(elLaterDouble.value, Number(elLaterDarts.value)).then((recorded)=>{

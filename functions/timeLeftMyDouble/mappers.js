@@ -75,7 +75,8 @@ function summarizeDoubles(perDouble) {
   const hitOnThree = values.filter((entry) => Number(entry && entry.hitDart) === 3).length;
   const missed = values.filter((entry) => entry && !entry.completed && Number(entry.attempts || 0) > 0).length;
   const darts = values.reduce((sum, entry) => sum + dartsAt(entry), 0);
-  return { attempts, completed, hitOnOne, hitOnTwo, hitOnThree, missed, darts };
+  const extraDarts = values.reduce((sum, entry) => sum + Number(entry && entry.extraDarts || 0), 0);
+  return { attempts, completed, hitOnOne, hitOnTwo, hitOnThree, missed, darts, extraDarts };
 }
 
 // The doubles that took the most darts (only those that needed more than one visit), for the description.
@@ -88,6 +89,13 @@ function hardestDoubles(perDouble, limit = 3) {
     .map((row) => ({ double: OUTPUT_LABELS[row.key] || row.key, darts: row.darts }));
 }
 
+// Doubles that were deliberately stayed on (more than 3 darts thrown in one go), with the extra darts.
+function stayedOnDoubles(perDouble) {
+  return TARGETS
+    .map((key) => ({ double: OUTPUT_LABELS[key] || key, extraDarts: Number(perDouble && perDouble[key] && perDouble[key].extraDarts || 0) }))
+    .filter((row) => row.extraDarts > 0);
+}
+
 function count(n, word) {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
@@ -95,7 +103,7 @@ function count(n, word) {
 // Time Left shows a card's title, summary and description as plain text (it never displays metadata),
 // so the numbers worth seeing have to be in those. Kept as sentences in one paragraph: the card doesn't
 // preserve line breaks.
-function describeSession(stats, hardest) {
+function describeSession(stats, hardest, stayedOn = []) {
   const parts = [];
   if (stats.completed > 0) {
     parts.push(`Hit on dart 1: ${stats.hitOnOne}, dart 2: ${stats.hitOnTwo}, dart 3: ${stats.hitOnThree}.`);
@@ -103,6 +111,9 @@ function describeSession(stats, hardest) {
   }
   if (hardest.length) {
     parts.push(`Most darts: ${hardest.map((row) => `${row.double} (${row.darts})`).join(", ")}.`);
+  }
+  if (stayedOn.length) {
+    parts.push(`Stayed on ${stayedOn.map((row) => `${row.double} (+${row.extraDarts})`).join(", ")} for ${count(stats.extraDarts, "extra dart")}.`);
   }
   return parts.join(" ");
 }
@@ -141,6 +152,7 @@ function mapSessionToTimeLeft(session, options = {}) {
   const dateId = localDate || dateIdFromMs(startedAtMs || endedAtMs, options.timeZone);
   const stats = summarizeDoubles(session.perDouble || session.doubles || {});
   const hardest = hardestDoubles(session.perDouble || session.doubles || {});
+  const stayedOn = stayedOnDoubles(session.perDouble || session.doubles || {});
   const duration = activeMs ? formatDuration(activeMs) : "";
   const title = dateId ? `Doubles practice - ${dateId}` : "Doubles practice";
   const sourceDocumentPath = options.sourceDocumentPath || `users/${options.uid || ""}/sessions/${sessionId}`;
@@ -151,7 +163,7 @@ function mapSessionToTimeLeft(session, options = {}) {
     category: "progressRecord",
     title,
     summary: `${stats.completed}/21 doubles completed, ${count(stats.darts, "dart")} in ${count(stats.attempts, "attempt")}${duration ? `, ${duration}` : ""}.`,
-    description: describeSession(stats, hardest),
+    description: describeSession(stats, hardest, stayedOn),
     sourceFirebaseProjectId: options.sourceFirebaseProjectId || "mydoublesprogress",
     sourceProjectName: "MyDoubleProgress",
     sourceProjectId: options.sourceProjectId || "mydoublesprogress",
@@ -181,6 +193,8 @@ function mapSessionToTimeLeft(session, options = {}) {
       darts: stats.darts,
       dartsPerDouble: stats.completed > 0 ? Math.round((stats.darts / stats.completed) * 10) / 10 : null,
       mostDarts: hardest,
+      extraDarts: stats.extraDarts,
+      stayedOn,
       completed: stats.completed,
       hitOnOne: stats.hitOnOne,
       hitOnTwo: stats.hitOnTwo,

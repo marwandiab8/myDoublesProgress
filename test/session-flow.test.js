@@ -677,3 +677,147 @@ test("the history shows darts, working them out for sessions saved before they w
   assert.match(html, /mono">8<\/td>/, "derived: 5 + 3");
   assert.match(html, /mono">57<\/td>/, "stored total is used as is");
 });
+
+// ---- "Stayed on this double": more than 3 darts at the same number ----
+
+async function logStay(app, outcome) {
+  app.el("stayOutcome").value = outcome;
+  app.renderTick();
+  await app.click("btnStay");
+}
+
+test("hitting D1 on the 7th dart is two missed visits and a hit, with 4 darts counted as extra", async () => {
+  const app = await startedApp();
+  await logStay(app, "hit:7");
+
+  const { activeSession: session, lifetime } = app.user();
+  assert.equal(session.doubles.D1.attempts, 3);
+  assert.equal(session.doubles.D1.completed, true);
+  assert.equal(session.doubles.D1.hitDart, 1, "the 7th dart is the 1st dart of the third visit");
+  assert.equal(session.doubles.D1.extraDarts, 4);
+  assert.equal(lifetime.doubles.D1.attempts, 3);
+  assert.equal(lifetime.doubles.D1.hits, 1);
+  assert.equal(lifetime.doubles.D1.hits1, 1);
+  assert.equal(session.flow.cursorIndex, 1, "play carries on at D2");
+
+  app.renderTick();
+  assert.equal(app.el("dartsPill").textContent, "7 darts · 4 extra");
+  assert.equal(app.el("progressPill").textContent, "1/21");
+  assert.match(app.el("boardBody").innerHTML, /\(\+4\)/, "the board marks the double that was stayed on");
+});
+
+test("the dart number decides the visits: 4 and 5 darts are two visits, 6 is two visits ending on dart 3", async () => {
+  for (const [dart, visits, hitDart, extra] of [[4, 2, 1, 1], [5, 2, 2, 2], [6, 2, 3, 3], [9, 3, 3, 6], [15, 5, 3, 12]]) {
+    const app = await startedApp();
+    await logStay(app, `hit:${dart}`);
+    const d1 = app.user().activeSession.doubles.D1;
+    assert.deepEqual([d1.attempts, d1.hitDart, d1.extraDarts], [visits, hitDart, extra], `hit on dart ${dart}`);
+    app.renderTick();
+    assert.match(app.el("dartsPill").textContent, new RegExp(`^${dart} darts`));
+  }
+});
+
+test("missing after 9 darts moves on, leaves the double open, and still counts the darts", async () => {
+  const app = await startedApp();
+  await logStay(app, "miss:9");
+
+  const { activeSession: session, lifetime } = app.user();
+  assert.equal(session.doubles.D1.attempts, 3);
+  assert.notEqual(session.doubles.D1.completed, true);
+  assert.equal(session.doubles.D1.extraDarts, 6);
+  assert.equal(lifetime.doubles.D1.attempts, 3);
+  assert.equal(lifetime.doubles.D1.hits ?? 0, 0);
+  assert.equal(session.flow.cursorIndex, 1);
+  app.renderTick();
+  assert.equal(app.el("dartsPill").textContent, "9 darts · 6 extra");
+  assert.equal(app.el("targetLabel").textContent, "D2");
+});
+
+test("an ordinary miss that comes round again later is not counted as extra darts", async () => {
+  const app = await startedApp();
+  await app.throwHit(1, "btnMiss"); // D1 missed, moves on
+  await app.throwHit(20); // D2..DBULL hit, then back round to D1
+  await app.throwHit(1); // D1 hit on its second visit
+
+  const d1 = app.user().activeSession?.doubles.D1 ?? app.user().sessions[Object.keys(app.user().sessions)[0]].perDouble.D1;
+  assert.equal(d1.attempts, 2);
+  assert.equal(d1.extraDarts, undefined, "coming back is not staying");
+});
+
+test("undo reverses a stay completely, even though it touched one double several times", async () => {
+  const app = await startedApp();
+  await logStay(app, "hit:7");
+
+  await app.click("btnUndo");
+
+  const { activeSession: session, lifetime } = app.user();
+  assert.equal(session.doubles.D1.attempts ?? 0, 0);
+  assert.equal(session.doubles.D1.completed ?? false, false);
+  assert.equal(session.doubles.D1.extraDarts, undefined);
+  assert.equal(lifetime.doubles.D1?.attempts ?? 0, 0);
+  assert.equal(lifetime.doubles.D1?.hits ?? 0, 0);
+  assert.equal(lifetime.doubles.D1?.hits1 ?? 0, 0);
+  assert.equal(session.flow.cursorIndex, 0);
+  app.renderTick();
+  assert.equal(app.el("dartsPill").textContent, "0 darts");
+});
+
+test("undoing a stay is refused if that double has changed since", async () => {
+  const app = await startedApp();
+  await logStay(app, "miss:6");
+  app.db.write("users/u1/state/activeSession/doubles/D1/attempts", 9); // another device logged more
+
+  await app.click("btnUndo");
+
+  assert.match(app.alerts.at(-1), /changed since/);
+  assert.equal(app.user().activeSession.doubles.D1.attempts, 9);
+});
+
+test("an outcome that isn't one of the choices is refused and changes nothing", async () => {
+  const app = await startedApp();
+  const before = app.user();
+  for (const bad of ["hit:3", "miss:7", "hit:16", "miss:3", "nonsense"]) {
+    app.el("stayOutcome").value = bad;
+    await app.click("btnStay"); // no render in between, so the dropdown's own filtering is bypassed
+    assert.match(app.alerts.at(-1), /how the extra darts ended/, bad);
+  }
+  assert.deepEqual(app.user(), before);
+});
+
+test("the stay Log button waits for a choice, and the dropdown isn't rewritten by idle ticks", async () => {
+  const app = await startedApp();
+  app.renderTick();
+  assert.equal(app.el("btnStay").disabled, true);
+  const writes = app.el("stayOutcome").writes.innerHTML;
+
+  app.el("stayOutcome").value = "hit:5";
+  for (let i = 0; i < 40; i++) app.renderTick();
+
+  assert.equal(app.el("btnStay").disabled, false);
+  assert.equal(app.el("stayOutcome").value, "hit:5", "the choice survives ticks");
+  assert.equal(app.el("stayOutcome").writes.innerHTML, writes);
+});
+
+test("a finished round saves its extra darts, and the history shows them", async () => {
+  const app = await startedApp();
+  const { sessionKey } = app.user().activeSession.meta;
+  await app.throwHit(20);
+  await logStay(app, "hit:4"); // DBULL on the 4th dart: 1 extra
+
+  const row = app.user().sessions[sessionKey];
+  assert.equal(row.totalDarts, 24);
+  assert.equal(row.extraDarts, 1);
+  assert.equal(row.perDouble.DBULL.extraDarts, 1);
+  assert.match(app.el("historyBody").innerHTML, /mono">24 <span[^>]*>\+1<\/span>/);
+});
+
+test("the history works out extra darts for a row that only has per-double data", async () => {
+  const app = boot({ users: { u1: { sessions: {
+    "-Kx": {
+      startedAtMs: Date.UTC(2028, 0, 1), activeMs: 60000,
+      perDouble: { D1: { attempts: 3, completed: true, hitDart: 1, extraDarts: 4 } },
+    },
+  } } } });
+  await app.signIn();
+  assert.match(app.el("historyBody").innerHTML, /mono">7 <span[^>]*>\+4<\/span>/);
+});

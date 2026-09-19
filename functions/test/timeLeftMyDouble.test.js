@@ -25,6 +25,7 @@ test("summarizeDoubles counts attempts and hits", () => {
     hitOnThree: 0,
     missed: 1,
     darts: 9, // D1: 1, D2: missed once (3) then hit on dart 2 (2), D3: missed once (3)
+    extraDarts: 0,
   });
 });
 
@@ -133,4 +134,29 @@ test("an empty session has an empty description and no average", () => {
   assert.equal(item.description, "");
   assert.equal(item.metadata.dartsPerDouble, null);
   assert.equal(item.summary, "0/21 doubles completed, 0 darts in 0 attempts.");
+});
+
+test("the description says which doubles were stayed on for extra darts", () => {
+  const item = mapSessionToTimeLeft({
+    startedAtMs: new Date(2028, 6, 25, 9, 0, 0).getTime(),
+    perDouble: {
+      D7: { attempts: 3, completed: true, hitDart: 1, extraDarts: 4 }, // hit on the 7th dart
+      DBULL: { attempts: 3, completed: false, extraDarts: 6 }, // 9 darts, no hit
+      D2: { attempts: 1, completed: true, hitDart: 2 },
+    },
+  }, { uid: "u1", sessionId: "s1" });
+
+  assert.match(item.description, /Stayed on D7 \(\+4\), Bull \(\+6\) for 10 extra darts\.$/);
+  assert.equal(item.metadata.extraDarts, 10);
+  assert.deepEqual(item.metadata.stayedOn, [{ double: "D7", extraDarts: 4 }, { double: "Bull", extraDarts: 6 }]);
+});
+
+test("a session with no stays doesn't mention extra darts", () => {
+  const item = mapSessionToTimeLeft({
+    startedAtMs: new Date(2028, 6, 25, 9, 0, 0).getTime(),
+    perDouble: { D1: { attempts: 2, completed: true, hitDart: 2 } },
+  }, { uid: "u1", sessionId: "s1" });
+  assert.doesNotMatch(item.description, /Stayed|extra/);
+  assert.equal(item.metadata.extraDarts, 0);
+  assert.deepEqual(item.metadata.stayedOn, []);
 });
