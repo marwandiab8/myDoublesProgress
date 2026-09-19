@@ -388,7 +388,7 @@
       appId: "1:518662869581:web:672c48cf33a27772d54204"
     };
 
-    const REVISION = "rev-2026-09-18-v16";
+    const REVISION = "rev-2026-09-18-v17";
 
     const TARGETS = [
       ...Array.from({length:20}, (_,i)=>({ key:`D${i+1}`, label:`D${i+1}` })),
@@ -466,6 +466,21 @@ let uid = null;
     // Board sort preference
     let boardSort = storageGet("dt_boardSort") || "order";
     if (elBoardSort) elBoardSort.value = boardSort;
+
+    // render() also runs every 250ms to advance the timer, so only touch the DOM when a value has
+    // actually changed. Otherwise the board and history tables are rebuilt four times a second, which
+    // wastes battery and resets text selection and scroll position inside them.
+    function setText(el, text){
+      if (el.textContent !== text) el.textContent = text;
+    }
+    // innerHTML is re-serialized by the browser on read, so it can't be compared with the string that
+    // was written; remember the last string instead. Every write to these elements must use this.
+    const lastHtml = new WeakMap();
+    function setHtml(el, html){
+      if (lastHtml.get(el) === html) return;
+      lastHtml.set(el, html);
+      el.innerHTML = html;
+    }
 
     function enable(el, on=true){
       el.classList.toggle("disabled", !on);
@@ -579,7 +594,7 @@ let uid = null;
       const tags = [elTagNext1, elTagNext2, elTagNext3, elTagNext4];
       for (let i=0;i<4;i++){
         const v = nextLabels[i] || "—";
-        tags[i].textContent = v;
+        setText(tags[i], v);
       }
     }
 
@@ -590,11 +605,11 @@ let uid = null;
     function renderHistory(){
       const sessions = model?.sessions || [];
       if (!uid){
-        elHistoryBody.innerHTML = '<tr><td colspan="2" class="muted">Sign in to load…</td></tr>';
+        setHtml(elHistoryBody, '<tr><td colspan="2" class="muted">Sign in to load…</td></tr>');
         return;
       }
       if (!sessions.length){
-        elHistoryBody.innerHTML = '<tr><td colspan="2" class="muted">No sessions yet…</td></tr>';
+        setHtml(elHistoryBody, '<tr><td colspan="2" class="muted">No sessions yet…</td></tr>');
         return;
       }
       const rows = sessions.map(s=>{
@@ -602,7 +617,7 @@ let uid = null;
         const dur = (typeof s.activeMs === "number") ? fmt(s.activeMs) : "—";
         return `<tr><td>${date}</td><td class="right mono">${dur}</td></tr>`;
       });
-      elHistoryBody.innerHTML = rows.join("");
+      setHtml(elHistoryBody, rows.join(""));
     }
 
     
@@ -817,33 +832,33 @@ function render(){
 
       // Timer UI
       if (!sess){
-        elTimer.textContent = "00:00";
-        elTimerNote.textContent = "No active session";
-        elProgressPill.textContent = "—";
-        elTargetLabel.textContent = "—";
-        elTargetHint.textContent = signedIn ? "Start a new session." : "Sign in to begin.";
+        setText(elTimer, "00:00");
+        setText(elTimerNote, "No active session");
+        setText(elProgressPill, "—");
+        setText(elTargetLabel, "—");
+        setText(elTargetHint, signedIn ? "Start a new session." : "Sign in to begin.");
         hideUpNext();
       } else {
         const elapsed = computeElapsed(sess);
-        elTimer.textContent = fmt(elapsed);
+        setText(elTimer, fmt(elapsed));
         const paused = !!sess.timer?.isPaused;
-        btnPauseResume.textContent = paused ? "Resume" : "Pause";
-        elTimerNote.textContent = paused ? "Paused (timer stopped)" : "Running (active time)";
+        setText(btnPauseResume, paused ? "Resume" : "Pause");
+        setText(elTimerNote, paused ? "Paused (timer stopped)" : "Running (active time)");
 
         const doneCount = Object.values(sess.doubles||{}).filter(d=>d.completed).length;
-        elProgressPill.textContent = `${doneCount}/${TARGETS.length}`;
+        setText(elProgressPill, `${doneCount}/${TARGETS.length}`);
 
         const curIdx = sess.flow?.cursorIndex ?? 0;
         const idx = nextIndexFrom(sess, curIdx);
 
         if (idx === -1){
-          elTargetLabel.textContent = "DONE";
-          elTargetHint.textContent = "All doubles completed — saved automatically (check history).";
+          setText(elTargetLabel, "DONE");
+          setText(elTargetHint, "All doubles completed — saved automatically (check history).");
           hideUpNext();
         } else {
           const current = TARGETS[idx].label;
-          elTargetLabel.textContent = current;
-          elTargetHint.textContent = `Log this double: Hit on 1 / 2 / 3, or Miss. `;
+          setText(elTargetLabel, current);
+          setText(elTargetHint, `Log this double: Hit on 1 / 2 / 3, or Miss. `);
 
           // Build next 4 open doubles (excluding current)
           const nextOpen = [];
@@ -864,12 +879,12 @@ function render(){
 
       // Board table (render even if no active session)
       if (!signedIn){
-        elBoardBody.innerHTML = '<tr><td colspan="8" class="muted">Sign in to load…</td></tr>';
+        setHtml(elBoardBody, '<tr><td colspan="8" class="muted">Sign in to load…</td></tr>');
         renderHistory();
         return;
       }
       if (!life){
-        elBoardBody.innerHTML = '<tr><td colspan="8" class="muted">Loading…</td></tr>';
+        setHtml(elBoardBody, '<tr><td colspan="8" class="muted">Loading…</td></tr>');
         renderHistory();
         return;
       }
@@ -964,7 +979,7 @@ function render(){
         return tie;
       });
 
-      elBoardBody.innerHTML = rows.map(r=>r.html).join("");
+      setHtml(elBoardBody, rows.map(r=>r.html).join(""));
 
 
       renderHeatMap();
@@ -1422,8 +1437,8 @@ function render(){
         enable(btnHit1, false); enable(btnHit2, false); enable(btnHit3, false); enable(btnMiss, false);
         enable(btnSaveDone, false);
 
-        elBoardBody.innerHTML = '<tr><td colspan="8" class="muted">Sign in to load…</td></tr>';
-        elHistoryBody.innerHTML = '<tr><td colspan="2" class="muted">Sign in to load…</td></tr>';
+        setHtml(elBoardBody, '<tr><td colspan="8" class="muted">Sign in to load…</td></tr>');
+        setHtml(elHistoryBody, '<tr><td colspan="2" class="muted">Sign in to load…</td></tr>');
 
         if (tick) clearInterval(tick);
         if (unsubHeat){ unsubHeat(); unsubHeat = null; }

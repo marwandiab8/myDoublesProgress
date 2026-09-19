@@ -126,13 +126,22 @@ function boot(initial) {
   const el = (id) => {
     if (!elements.has(id)) {
       const handlers = {};
-      elements.set(id, {
-        id, handlers, style: {}, disabled: false, textContent: "", innerHTML: "", className: "", value: "",
+      const node = {
+        id, handlers, style: {}, disabled: false, className: "", value: "",
+        writes: { innerHTML: 0, textContent: 0 }, // how many times the page assigned each property
         classList: { toggle() {}, add() {}, remove() {} },
         addEventListener(type, fn) { handlers[type] = fn; },
         scrollIntoView() {}, getBoundingClientRect() { return { top: 0 }; },
         querySelectorAll() { return []; }, closest() { return null; }, getAttribute() { return null; },
-      });
+      };
+      for (const prop of ["innerHTML", "textContent"]) {
+        let value = "";
+        Object.defineProperty(node, prop, {
+          get: () => value,
+          set: (v) => { value = v; node.writes[prop]++; },
+        });
+      }
+      elements.set(id, node);
     }
     return elements.get(id);
   };
@@ -214,6 +223,7 @@ function boot(initial) {
     errorText: () => el("errorBox").textContent,
     // The page re-renders every 250ms; run that tick so button states reflect the latest change.
     renderTick() { state.ticker(); },
+    async signOut() { state.authCb(null); await tick(); },
     async signIn() { state.authCb({ uid: "u1", email: "player@example.com" }); await tick(); },
     async click(id) { await el(id).handlers.click({ target: el(id) }); await tick(); },
     // Each throw takes one second, so a full round of 21 hits lasts 21s of active time.
@@ -476,4 +486,38 @@ test("if the move can't run, nothing is enabled and the old data is untouched", 
   assert.equal(app.el("btnStartNew").disabled, true, "must not let a throw create a fresh state");
   assert.equal(app.raw().state, undefined);
   assert.equal(app.raw().lifetime.doubles.D1.attempts, 4);
+});
+
+test("the 250ms tick advances the timer but doesn't rewrite the board or history when nothing changed", async () => {
+  const app = await startedApp();
+  await app.throwHit(3);
+  const board = app.el("boardBody");
+  const history = app.el("historyBody");
+  const before = { board: board.writes.innerHTML, history: history.writes.innerHTML };
+  assert.ok(before.board > 0, "the board was rendered");
+
+  app.clock.t += 58 * 1000;
+  for (let i = 0; i < 40; i++) app.renderTick();
+
+  assert.equal(board.writes.innerHTML, before.board, "idle ticks must not rebuild the board");
+  assert.equal(history.writes.innerHTML, before.history, "idle ticks must not rebuild the history");
+  assert.equal(app.el("timer").textContent, "1:01", "the timer still advances on a tick");
+
+  await app.throwHit(1);
+  assert.ok(board.writes.innerHTML > before.board, "a real change still updates the board");
+});
+
+test("signing out clears the board, and signing back in shows it again despite the write cache", async () => {
+  const app = await startedApp();
+  await app.throwHit(2);
+  assert.match(app.el("boardBody").innerHTML, /D1/);
+
+  await app.signOut();
+  app.renderTick();
+  assert.match(app.el("boardBody").innerHTML, /Sign in to load/);
+  assert.match(app.el("historyBody").innerHTML, /Sign in to load/);
+
+  await app.signIn();
+  app.renderTick();
+  assert.match(app.el("boardBody").innerHTML, /D1/, "rows come back, not a stale skipped write");
 });
