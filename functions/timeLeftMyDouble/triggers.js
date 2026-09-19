@@ -8,6 +8,7 @@ const {
   sendTimeLeftMyDoubleItem,
   sendTimeLeftMyDoubleItemsBatch,
 } = require("./ingestionClient");
+const { isAuthorized } = require("./auth");
 const { mapSessionToTimeLeft } = require("./mappers");
 
 const region = "us-central1";
@@ -42,9 +43,7 @@ function chunk(items, size) {
 }
 
 function assertBackfillAuth(req) {
-  const header = String(req.get("authorization") || "");
-  const match = header.match(/^Bearer\s+(.+)$/i);
-  if (!match || match[1].trim() !== TIME_LEFT_INGESTION_TOKEN.value()) {
+  if (!isAuthorized(req.get("authorization"), TIME_LEFT_INGESTION_TOKEN.value())) {
     const error = new Error("Forbidden.");
     error.status = 403;
     throw error;

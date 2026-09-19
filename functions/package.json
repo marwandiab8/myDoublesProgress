@@ -6,8 +6,8 @@
     "node": "22"
   },
   "scripts": {
-    "lint": "node --check index.js && node --check timeLeftMyDouble/config.js && node --check timeLeftMyDouble/ingestionClient.js && node --check timeLeftMyDouble/mappers.js && node --check timeLeftMyDouble/triggers.js",
-    "test": "node --test test/timeLeftMyDouble.test.js"
+    "lint": "node --check index.js && node --check timeLeftMyDouble/auth.js && node --check timeLeftMyDouble/config.js && node --check timeLeftMyDouble/ingestionClient.js && node --check timeLeftMyDouble/mappers.js && node --check timeLeftMyDouble/triggers.js",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "firebase-admin": "^13.4.0",
