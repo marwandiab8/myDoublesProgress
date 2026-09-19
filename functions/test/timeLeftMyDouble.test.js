@@ -160,3 +160,21 @@ test("a session with no stays doesn't mention extra darts", () => {
   assert.equal(item.metadata.extraDarts, 0);
   assert.deepEqual(item.metadata.stayedOn, []);
 });
+
+test("the title carries the darts total, since that is all the Activity dashboard shows", () => {
+  const started = new Date(2028, 6, 25, 9, 0, 0).getTime();
+  const withDarts = mapSessionToTimeLeft({
+    startedAtMs: started,
+    perDouble: { D1: { attempts: 3, completed: true, hitDart: 1, extraDarts: 4 } },
+  }, { uid: "u1", sessionId: "s1" });
+  assert.equal(withDarts.title, "Doubles practice - 2028-07-25 · 7 darts");
+
+  const single = mapSessionToTimeLeft({
+    startedAtMs: started,
+    perDouble: { D1: { attempts: 1, completed: true, hitDart: 1 } },
+  }, { uid: "u1", sessionId: "s1" });
+  assert.equal(single.title, "Doubles practice - 2028-07-25 · 1 dart");
+
+  const empty = mapSessionToTimeLeft({ startedAtMs: started, perDouble: {} }, { uid: "u1", sessionId: "s1" });
+  assert.equal(empty.title, "Doubles practice - 2028-07-25", "no darts, no suffix");
+});

@@ -154,7 +154,10 @@ function mapSessionToTimeLeft(session, options = {}) {
   const hardest = hardestDoubles(session.perDouble || session.doubles || {});
   const stayedOn = stayedOnDoubles(session.perDouble || session.doubles || {});
   const duration = activeMs ? formatDuration(activeMs) : "";
-  const title = dateId ? `Doubles practice - ${dateId}` : "Doubles practice";
+  // Time Left's Activity dashboard shows only a row's title, start and duration (never the summary or
+  // description), so the darts total goes in the title to be visible there.
+  const dartsInTitle = stats.darts > 0 ? ` · ${count(stats.darts, "dart")}` : "";
+  const title = `${dateId ? `Doubles practice - ${dateId}` : "Doubles practice"}${dartsInTitle}`;
   const sourceDocumentPath = options.sourceDocumentPath || `users/${options.uid || ""}/sessions/${sessionId}`;
 
   return compactObject({
