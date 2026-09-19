@@ -9,6 +9,7 @@ const {
   sendTimeLeftMyDoubleItemsBatch,
 } = require("./ingestionClient");
 const { isAuthorized } = require("./auth");
+const { chunkBySize } = require("./batching");
 const { mapSessionToTimeLeft } = require("./mappers");
 
 const region = "us-central1";
@@ -34,12 +35,6 @@ function mapSession(uid, sessionId, session, syncStatus = "active") {
     uid,
     sessionId,
   });
-}
-
-function chunk(items, size) {
-  const out = [];
-  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
-  return out;
 }
 
 function assertBackfillAuth(req) {
@@ -114,7 +109,7 @@ exports.backfillMyDoubleSessionsToTimeLeft = functions
         batches: [],
       };
 
-      for (const batch of chunk(items, 100)) {
+      for (const batch of chunkBySize(items, { calendarId: config.calendarId, connectionId: config.connectionId })) {
         const response = await sendTimeLeftMyDoubleItemsBatch(batch, { throwOnError: true });
         result.sent += batch.length;
         result.failed += Array.isArray(response.errors) ? response.errors.length : 0;

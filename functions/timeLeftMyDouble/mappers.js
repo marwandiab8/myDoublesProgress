@@ -58,6 +58,14 @@ function isoFromMs(value) {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
+// Darts thrown at one double: each missed visit was 3 darts and the visit that hit it took `hitDart`.
+// Mirrors dartsAt() in public/index.html, so sessions saved before the app showed darts still work.
+function dartsAt(entry) {
+  const attempts = Number(entry && entry.attempts || 0);
+  if (!attempts) return 0;
+  return entry.completed ? (attempts - 1) * 3 + (Number(entry.hitDart) || 3) : attempts * 3;
+}
+
 function summarizeDoubles(perDouble) {
   const values = Object.values(perDouble || {});
   const completed = values.filter((entry) => entry && entry.completed).length;
@@ -66,7 +74,37 @@ function summarizeDoubles(perDouble) {
   const hitOnTwo = values.filter((entry) => Number(entry && entry.hitDart) === 2).length;
   const hitOnThree = values.filter((entry) => Number(entry && entry.hitDart) === 3).length;
   const missed = values.filter((entry) => entry && !entry.completed && Number(entry.attempts || 0) > 0).length;
-  return { attempts, completed, hitOnOne, hitOnTwo, hitOnThree, missed };
+  const darts = values.reduce((sum, entry) => sum + dartsAt(entry), 0);
+  return { attempts, completed, hitOnOne, hitOnTwo, hitOnThree, missed, darts };
+}
+
+// The doubles that took the most darts (only those that needed more than one visit), for the description.
+function hardestDoubles(perDouble, limit = 3) {
+  return TARGETS
+    .map((key) => ({ key, darts: dartsAt(perDouble && perDouble[key]) }))
+    .filter((row) => row.darts > 3)
+    .sort((a, b) => b.darts - a.darts) // stable, so ties stay in D1 -> Bull order
+    .slice(0, limit)
+    .map((row) => ({ double: OUTPUT_LABELS[row.key] || row.key, darts: row.darts }));
+}
+
+function count(n, word) {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+// Time Left shows a card's title, summary and description as plain text (it never displays metadata),
+// so the numbers worth seeing have to be in those. Kept as sentences in one paragraph: the card doesn't
+// preserve line breaks.
+function describeSession(stats, hardest) {
+  const parts = [];
+  if (stats.completed > 0) {
+    parts.push(`Hit on dart 1: ${stats.hitOnOne}, dart 2: ${stats.hitOnTwo}, dart 3: ${stats.hitOnThree}.`);
+    parts.push(`Averaged ${(stats.darts / stats.completed).toFixed(1)} darts per double.`);
+  }
+  if (hardest.length) {
+    parts.push(`Most darts: ${hardest.map((row) => `${row.double} (${row.darts})`).join(", ")}.`);
+  }
+  return parts.join(" ");
 }
 
 function formatDuration(ms) {
@@ -102,6 +140,7 @@ function mapSessionToTimeLeft(session, options = {}) {
   const localDate = LOCAL_DATE_PATTERN.test(String(session.localDate || "")) ? session.localDate : "";
   const dateId = localDate || dateIdFromMs(startedAtMs || endedAtMs, options.timeZone);
   const stats = summarizeDoubles(session.perDouble || session.doubles || {});
+  const hardest = hardestDoubles(session.perDouble || session.doubles || {});
   const duration = activeMs ? formatDuration(activeMs) : "";
   const title = dateId ? `Doubles practice - ${dateId}` : "Doubles practice";
   const sourceDocumentPath = options.sourceDocumentPath || `users/${options.uid || ""}/sessions/${sessionId}`;
@@ -111,8 +150,8 @@ function mapSessionToTimeLeft(session, options = {}) {
     sourceApp: "MyDoubleProgress",
     category: "progressRecord",
     title,
-    summary: `${stats.completed}/21 doubles completed, ${stats.attempts} attempts${duration ? `, ${duration}` : ""}.`,
-    description: "",
+    summary: `${stats.completed}/21 doubles completed, ${count(stats.darts, "dart")} in ${count(stats.attempts, "attempt")}${duration ? `, ${duration}` : ""}.`,
+    description: describeSession(stats, hardest),
     sourceFirebaseProjectId: options.sourceFirebaseProjectId || "mydoublesprogress",
     sourceProjectName: "MyDoubleProgress",
     sourceProjectId: options.sourceProjectId || "mydoublesprogress",
@@ -139,6 +178,9 @@ function mapSessionToTimeLeft(session, options = {}) {
       activeMs: activeMs || null,
       duration,
       attempts: stats.attempts,
+      darts: stats.darts,
+      dartsPerDouble: stats.completed > 0 ? Math.round((stats.darts / stats.completed) * 10) / 10 : null,
+      mostDarts: hardest,
       completed: stats.completed,
       hitOnOne: stats.hitOnOne,
       hitOnTwo: stats.hitOnTwo,

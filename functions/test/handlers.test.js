@@ -17,7 +17,7 @@ Object.assign(process.env, {
 
 const fetchCalls = [];
 global.fetch = async (url, init) => {
-  fetchCalls.push({ url, headers: init.headers, body: JSON.parse(init.body) });
+  fetchCalls.push({ url, headers: init.headers, body: JSON.parse(init.body), bytes: Buffer.byteLength(init.body) });
   return { ok: true, status: 200, text: async () => JSON.stringify({ created: 1 }) };
 };
 
@@ -110,7 +110,7 @@ test("the backfill rejects a wrong method, a missing token and a wrong token bef
   assert.equal(fetchCalls.length, 0);
 });
 
-test("the backfill reads the owner's sessions and posts them to Time Left in batches of 100", async () => {
+test("the backfill posts every session to Time Left in batches that stay under its 64 KB request limit", async () => {
   storedSessions = Object.fromEntries(
     Array.from({ length: 150 }, (_, i) => [`s${i}`, eveningSession]),
   );
@@ -121,12 +121,17 @@ test("the backfill reads the owner's sessions and posts them to Time Left in bat
   assert.equal(out.body.ok, true);
   assert.equal(out.body.scanned, 150);
   assert.equal(out.body.sent, 150);
-  assert.deepEqual(out.body.batches.map((b) => b.count), [100, 50]);
   assert.deepEqual(dbReads, [{ path: "users/owner-uid/sessions", limit: 500, eventType: "value" }]);
-  assert.deepEqual(fetchCalls.map((c) => [c.url, c.body.items.length]), [
-    ["https://time-left.test/ingestBatch", 100],
-    ["https://time-left.test/ingestBatch", 50],
-  ]);
+
+  // Each item is ~3 KB, so 150 of them can't go in one or two requests.
+  assert.ok(fetchCalls.length > 2, `expected several batches, got ${fetchCalls.length}`);
+  for (const call of fetchCalls) {
+    assert.equal(call.url, "https://time-left.test/ingestBatch");
+    assert.ok(call.bytes <= 64 * 1024, `a request was ${call.bytes} bytes, over Time Left's 64 KB limit`);
+    assert.ok(call.body.items.length <= 100);
+  }
+  assert.equal(fetchCalls.reduce((n, call) => n + call.body.items.length, 0), 150, "nothing is dropped");
+  assert.equal(out.body.batches.reduce((n, b) => n + b.count, 0), 150);
   assert.equal(fetchCalls[0].body.items[0].dateId, "2028-07-25");
 });
 

@@ -24,6 +24,7 @@ test("summarizeDoubles counts attempts and hits", () => {
     hitOnTwo: 1,
     hitOnThree: 0,
     missed: 1,
+    darts: 9, // D1: 1, D2: missed once (3) then hit on dart 2 (2), D3: missed once (3)
   });
 });
 
@@ -90,4 +91,46 @@ test("mapSessionToTimeLeft reports the bullseye stored under the app's DBULL key
   assert.equal(bull.completed, true);
   assert.equal(bull.hitDart, 3);
   assert.equal(item.metadata.perDouble.length, 21);
+});
+
+test("the summary and description carry the numbers Time Left actually displays", () => {
+  const item = mapSessionToTimeLeft({
+    startedAtMs: new Date(2028, 6, 25, 9, 0, 0).getTime(),
+    endedAtMs: new Date(2028, 6, 25, 9, 30, 0).getTime(),
+    activeMs: 1800000,
+    perDouble: {
+      D1: { attempts: 1, completed: true, hitDart: 1 }, // 1 dart
+      D2: { attempts: 2, completed: true, hitDart: 2 }, // 3 + 2 = 5 darts
+      D3: { attempts: 3, completed: true, hitDart: 3 }, // 6 + 3 = 9 darts
+      DBULL: { attempts: 2, completed: true, hitDart: 3 }, // 3 + 3 = 6 darts
+    },
+  }, { uid: "u1", sessionId: "s1" });
+
+  assert.equal(item.summary, "4/21 doubles completed, 21 darts in 8 attempts, 30m 0s.");
+  assert.equal(
+    item.description,
+    "Hit on dart 1: 1, dart 2: 1, dart 3: 2. Averaged 5.3 darts per double. Most darts: D3 (9), Bull (6), D2 (5).",
+  );
+  assert.equal(item.metadata.darts, 21);
+  assert.equal(item.metadata.dartsPerDouble, 5.3);
+  assert.deepEqual(item.metadata.mostDarts, [
+    { double: "D3", darts: 9 }, { double: "Bull", darts: 6 }, { double: "D2", darts: 5 },
+  ]);
+});
+
+test("the description leaves out 'most darts' when every double went in within one visit, and pluralizes", () => {
+  const item = mapSessionToTimeLeft({
+    startedAtMs: new Date(2028, 6, 25, 9, 0, 0).getTime(),
+    perDouble: { D1: { attempts: 1, completed: true, hitDart: 1 } },
+  }, { uid: "u1", sessionId: "s1" });
+
+  assert.equal(item.summary, "1/21 doubles completed, 1 dart in 1 attempt.");
+  assert.equal(item.description, "Hit on dart 1: 1, dart 2: 0, dart 3: 0. Averaged 1.0 darts per double.");
+});
+
+test("an empty session has an empty description and no average", () => {
+  const item = mapSessionToTimeLeft({ startedAtMs: new Date(2028, 6, 25, 9, 0, 0).getTime(), perDouble: {} }, { uid: "u1", sessionId: "s1" });
+  assert.equal(item.description, "");
+  assert.equal(item.metadata.dartsPerDouble, null);
+  assert.equal(item.summary, "0/21 doubles completed, 0 darts in 0 attempts.");
 });
